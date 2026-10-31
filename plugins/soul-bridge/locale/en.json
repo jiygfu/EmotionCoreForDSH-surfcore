@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "SoulCore Shadow Bridge",
+    "description": "Observes llm/stream and logs local retrieval/P snapshots without changing the request."
+  }
+}
