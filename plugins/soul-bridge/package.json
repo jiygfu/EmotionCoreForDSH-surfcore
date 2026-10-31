@@ -1,6 +1,6 @@
 {
   "name": "@soulproject/soul-bridge",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "EmotionCore (SoulCore-compatible) shadow bridge for DSH: observe llm/stream, call local retrieval, never rewrite the request.",

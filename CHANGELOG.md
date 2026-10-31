@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.1 — 2026-11-01
+
+### 许可证
+
+- 项目整体改为 **MIT License**：允许使用、修改、分发、商用，保留版权与许可证声明。
+
+### 安全
+
+- 群聊/图片/转发/链接内容明确按“不可信数据”处理，不作为系统指令；
+- `soulcore_memory` 的 `resolve` 默认关闭，需 owner 在设置页显式开启；
+- 余额探测禁用 HTTP 重定向，避免 `Authorization` 头被带到重定向目标；
+- 余额缓存文件在 Unix 上限制为 `0600`；
+- 设置页 API 增加 `Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`。
+
 ## 0.3.0 — 2026-10-31
 
 首个带版本号的公开快照。

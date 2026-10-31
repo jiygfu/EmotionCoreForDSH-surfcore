@@ -1,8 +1,6 @@
 # Third-party notices
 
-EmotionCore for SurfCore 自身尚未声明整体开源许可证。本文件记录参考、依赖和运行环境中涉及的第三方项目；各项目仍归其作者所有，并按各自许可证使用。
-
-> 若你要对外分发本仓库或衍生版本，请先为 EmotionCore 选择一个整体许可证，并重新核对这些声明。
+EmotionCore for SurfCore 以 **MIT License** 发布（见 [`LICENSE`](LICENSE)）；第三方项目仍归其作者所有，并按各自许可证使用。
 
 ## 直接依赖（Python）
 

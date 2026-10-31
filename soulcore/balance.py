@@ -20,6 +20,13 @@ CREDENTIALS = DSH_HOME / ".credentials.yaml"
 OUT = DATA / "balance.json"
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect with the Bearer key attached."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        return None
+
+
 def _api_key() -> str:
     key = str(os.environ.get("DEEPSEEK_API_KEY") or "").strip()
     if key:
@@ -42,7 +49,8 @@ def refresh(*, timeout: int = 8) -> dict[str, Any]:
         method="GET",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        opener = urllib.request.build_opener(_NoRedirect)
+        with opener.open(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8", "replace"))
     except Exception as exc:
         return {"ok": False, "error": str(exc)[:300]}
@@ -65,6 +73,10 @@ def refresh(*, timeout: int = 8) -> dict[str, Any]:
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        os.chmod(OUT, 0o600)
+    except OSError:
+        pass
     return result
 
 

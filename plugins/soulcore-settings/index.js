@@ -48,6 +48,7 @@ const DEFAULTS = {
   enabled: true,
   shadowEnabled: true,
   memoryTool: true,
+  memoryResolve: false,
   fishRunner: false,
   mark: false,
   timeoutMs: 4000,
@@ -71,6 +72,8 @@ function json(res, status, value) {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'content-security-policy': "default-src 'none'",
   })
   res.end(body)
 }
@@ -298,7 +301,7 @@ async function state(ctx) {
   const toolRegistered = Boolean(tools?.get?.('soulcore_memory'))
   const statsResult = await runPython(settings, ['memory-stats'], 20000)
   const memory = parseJsonOutput(statsResult)
-  let version = '0.3.0'
+  let version = '0.3.1'
   try { version = (await readFile(VERSION_PATH, 'utf8')).trim() || version } catch {}
   return {
     ok: true,

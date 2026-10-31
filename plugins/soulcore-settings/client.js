@@ -150,7 +150,7 @@ window.__ModuleLoader__.load({
             toolOk ? '记忆工具在线' : '记忆工具未注册',
           ),
         ),
-        h('div', { style: styles.subtitle }, `EmotionCore for DSH / SurfCore · v${status?.version || '0.3.0'}：本地记忆、评价、L2 事件索引与系统状态。原文由 SurfCore 保存，EmotionCore 只做增强；内部兼容 ID 仍为 soulcore。`),
+        h('div', { style: styles.subtitle }, `EmotionCore for DSH / SurfCore · v${status?.version || '0.3.1'}：本地记忆、评价、L2 事件索引与系统状态。原文由 SurfCore 保存，EmotionCore 只做增强；内部兼容 ID 仍为 soulcore。`),
 
         h('div', { style: styles.grid },
           h('div', { style: styles.card }, h('div', { style: styles.label }, '长期记忆'), h('div', { style: { ...styles.value, color: memCount ? C.ok : C.warn } }, memCount ? `${memCount} 条` : '—')),
@@ -214,6 +214,8 @@ window.__ModuleLoader__.load({
           h('div', { style: styles.sectionHint }, '改完保存，Soul-Bridge 下一次调用即读取新值；记忆查询默认跨私聊/群聊。'),
           h(Row, { first: true, name: '记忆查询工具', desc: '允许 agent 调用 soulcore_memory 查本地长期记忆（默认全局库）。' },
             h(Toggle, { checked: settings.memoryTool !== false, onChange: (v) => set('memoryTool', v) })),
+          h(Row, { name: '允许模型写修正记忆', desc: '打开后 soulcore_memory 的 resolve 才能写本地 correction；默认关闭，防止群聊注入改记忆。' },
+            h(Toggle, { checked: settings.memoryResolve === true, onChange: (v) => set('memoryResolve', v) })),
           h(Row, { name: '影子检索日志', desc: '监听模型请求，把本地召回与 P 写入 shadow 日志；不改写请求。' },
             h(Toggle, { checked: settings.shadowEnabled !== false, onChange: (v) => set('shadowEnabled', v) })),
           h(Row, { name: '影子检索写回标记', desc: '命中时更新 familiarity / trigger；默认关闭。' },

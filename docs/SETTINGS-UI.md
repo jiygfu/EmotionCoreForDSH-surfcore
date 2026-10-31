@@ -47,6 +47,7 @@ data/capabilities.json
 ### 功能开关
 
 - 记忆查询工具（`soulcore_memory`）
+- 允许模型写修正记忆（`resolve`，默认关闭）
 - 影子检索日志
 - 影子检索写回标记
 

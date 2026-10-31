@@ -272,7 +272,7 @@ export function apply(ctx, config = {}) {
 
   ctx.effect(() => ctx.tools.register({
     name: 'soulcore_memory',
-    description: '查询桌宠自己的本地长期记忆（只读，questions/resolve 例外：resolve 会写修正记忆）。当对方问“你还记得/你还记得多少/查一下你的记忆/某天发生过什么/你对某人的印象”时使用。overview=总览与 P；today=今天触发；search=关键词检索，默认查 EmotionCore 全局本地库（跨私聊/群聊）；surfcore=显式使用 SurfCore 当前会话内置召回；person=某人的关系卡与最近记忆；range=按日期或时间范围查；p=当前人格基线；questions=查看待确认问题；resolve=提交表层评分与结论。可用 person/scope 过滤。一次最多 20 条；truncated=true 表示只是抽样，不要声称完整记忆，也不要用想象补漏洞。identity_status=legacy_unresolved/self 的旧记录不代表主人。',
+    description: '查询桌宠自己的本地长期记忆（只读，questions/resolve 例外：resolve 默认关闭，需 owner 在设置页开启，且会写修正记忆）。当对方问“你还记得/你还记得多少/查一下你的记忆/某天发生过什么/你对某人的印象”时使用。overview=总览与 P；today=今天触发；search=关键词检索，默认查 EmotionCore 全局本地库（跨私聊/群聊）；surfcore=显式使用 SurfCore 当前会话内置召回；person=某人的关系卡与最近记忆；range=按日期或时间范围查；p=当前人格基线；questions=查看待确认问题；resolve=提交表层评分与结论（默认禁用）。可用 person/scope 过滤。一次最多 20 条；truncated=true 表示只是抽样，不要声称完整记忆，也不要用想象补漏洞。identity_status=legacy_unresolved/self 的旧记录不代表主人。',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -326,6 +326,9 @@ export function apply(ctx, config = {}) {
         return { ok: false, text: 'soulcore_memory 已在 SoulCore 设置中关闭。' }
       }
       const input = args && typeof args === 'object' ? args : {}
+      if (String(input.mode || '') === 'resolve' && live.memoryResolve !== true) {
+        return { ok: false, text: 'resolve 写修正记忆默认关闭；需要 owner 在 EmotionCore 设置页开启“允许模型写修正记忆”。' }
+      }
       let result
       let backend = 'local'
       if (String(input.mode || '') === 'surfcore') {
