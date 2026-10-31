@@ -17,6 +17,12 @@ scripts/                   探针/工具脚本
 experiments/               离线实验
 ```
 
+## 第三方与参考
+
+- 本项目参考过 `DSH-Raising-Plan/dsh-mnemosyne` 的公开架构概念（observation/evidence/version/status、FTS5 思路），**未复制其源代码**；其许可证为 AGPL-3.0-or-later。
+- 运行依赖（psutil、Pillow、RapidOCR、NumPy）和上游 SurfCore/DSH 的许可证状态见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+- 本仓库自身尚未声明整体开源许可证；对外分发前请先选择并补充 LICENSE。
+
 ## 快速开始
 
 ```powershell

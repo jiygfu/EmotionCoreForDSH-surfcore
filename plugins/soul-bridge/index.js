@@ -6,8 +6,11 @@ import { fileURLToPath } from 'node:url'
 export const name = 'soul-bridge'
 export const inject = ['tools']
 
+const ROOT = process.env.EMOTIONCORE_ROOT
+  ? path.resolve(process.env.EMOTIONCORE_ROOT)
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SETTINGS_PATH = process.env.SOULCORE_SETTINGS_PATH
-  || 'F:\\BaiduNetdiskDownload\\soulproject\\data\\soul-bridge-settings.json'
+  || path.join(ROOT, 'data', 'soul-bridge-settings.json')
 
 async function runtimeConfig(base) {
   try {
@@ -133,8 +136,8 @@ function normalize(config = {}) {
     mark: config.mark === true,
     pythonPath: config.pythonPath || process.env.SOULCORE_PYTHON || 'python',
     nodePath: config.nodePath || process.env.SOULCORE_NODE || 'node',
-    dbPath: config.dbPath || 'F:\\BaiduNetdiskDownload\\soulproject\\data\\soulcore.db',
-    logPath: config.logPath || 'F:\\BaiduNetdiskDownload\\soulproject\\data\\shadow-bridge.jsonl',
+    dbPath: config.dbPath || path.join(ROOT, 'data', 'soulcore.db'),
+    logPath: config.logPath || path.join(ROOT, 'data', 'shadow-bridge.jsonl'),
     timeoutMs: Math.max(500, Number(config.timeoutMs) || 4000),
     maxInflight: Math.max(0, Number(config.maxInflight) || 2),
   }
@@ -269,7 +272,7 @@ export function apply(ctx, config = {}) {
 
   ctx.effect(() => ctx.tools.register({
     name: 'soulcore_memory',
-    description: '查询桌宠自己的本地长期记忆（只读，questions/resolve 例外：resolve 会写修正记忆）。当对方问“你还记得/你还记得多少/查一下你的记忆/某天发生过什么/你对某人的印象”时使用。overview=总览与 P；today=今天触发；search=关键词检索（无 person/scope 时复用 SurfCore 内置 recallFullMemory）；surfcore=强制 SurfCore 内置全量召回；person=某人的关系卡与最近记忆；range=按日期或时间范围查；p=当前人格基线；questions=查看待确认问题；resolve=提交表层评分与结论。可用 person/scope 过滤。一次最多 20 条；truncated=true 表示只是抽样，不要声称完整记忆，也不要用想象补漏洞。identity_status=legacy_unresolved/self 的旧记录不代表主人。',
+    description: '查询桌宠自己的本地长期记忆（只读，questions/resolve 例外：resolve 会写修正记忆）。当对方问“你还记得/你还记得多少/查一下你的记忆/某天发生过什么/你对某人的印象”时使用。overview=总览与 P；today=今天触发；search=关键词检索，默认查 EmotionCore 全局本地库（跨私聊/群聊）；surfcore=显式使用 SurfCore 当前会话内置召回；person=某人的关系卡与最近记忆；range=按日期或时间范围查；p=当前人格基线；questions=查看待确认问题；resolve=提交表层评分与结论。可用 person/scope 过滤。一次最多 20 条；truncated=true 表示只是抽样，不要声称完整记忆，也不要用想象补漏洞。identity_status=legacy_unresolved/self 的旧记录不代表主人。',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -277,7 +280,7 @@ export function apply(ctx, config = {}) {
         mode: {
           type: 'string',
           enum: ['overview', 'today', 'search', 'surfcore', 'person', 'range', 'p', 'questions', 'resolve'],
-          description: '查询模式，默认 overview；search 无 person/scope 时优先走 SurfCore 内置全量召回，surfcore 强制走内置召回；questions 看待确认问题，resolve 交表层评分',
+          description: '查询模式，默认 overview；search 默认走 SoulCore 全局本地库（跨私聊/群聊），surfcore 才走 SurfCore 当前会话召回；questions 看待确认问题，resolve 交表层评分',
         },
         query: { type: 'string', description: 'search 模式的关键词' },
         person: { type: 'string', description: 'person/range 模式的 QQ 号、qq:<id> 或显示名；也可用于 search/today 过滤' },
@@ -339,10 +342,11 @@ export function apply(ctx, config = {}) {
         && !input.person
         && !input.scope
       ) {
-        // Reuse SurfCore's canonical full-card recall for plain keyword search.
-        result = await runSurfcoreSearch(input.query, input.limit, live)
-        backend = result.ok ? 'surfcore_builtin' : 'local_fallback'
-        if (!result.ok) result = await runMemory(input, live)
+        // SoulCore local DB is the cross-conversation source of truth.
+        // SurfCore built-in recall is conversation-scoped; never use it as the
+        // default for "do you remember" across private/group chats.
+        result = await runMemory(input, live);
+        backend = 'local_global';
       } else {
         result = await runMemory(input, live)
       }

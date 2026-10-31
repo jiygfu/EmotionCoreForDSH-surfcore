@@ -398,6 +398,24 @@ class Phase1Tests(unittest.TestCase):
     def test_local_assist_disabled_is_noop(self):
         self.assertIsNone(local_assist.summarize("测试", timeout=0.1))
 
+    def test_fts_search_memories(self):
+        with tempfile.TemporaryDirectory() as td:
+            conn = db.connect(Path(td) / "test.db")
+            db.init_db(conn)
+            db.upsert_memory(conn, source="surfcore", source_record_id="f1",
+                             text="主人说今天想聊记忆分层和上下文预算",
+                             ts="2026-10-31T10:00:00+08:00",
+                             speaker="主人", scope="private")
+            db.upsert_memory(conn, source="surfcore", source_record_id="f2",
+                             text="今天吃了番茄炒蛋",
+                             ts="2026-10-31T10:01:00+08:00",
+                             speaker="主人", scope="private")
+            hits = retrieval.search_memories(conn, "记忆分层", limit=3)
+            self.assertTrue(hits)
+            self.assertIn("记忆", hits[0]["text"])
+            self.assertNotIn("番茄", hits[0]["text"])
+            conn.close()
+
     def test_episode_build_keeps_raw_ids(self):
         with tempfile.TemporaryDirectory() as td:
             conn = db.connect(Path(td) / "test.db")

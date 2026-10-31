@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "SoulCore",
-    "description": "本地记忆增强、评价开关、运行路径与操作入口。"
+    "title": "EmotionCore",
+    "description": "本地记忆、评价、FTS/L2 索引、能力开关与运行状态。"
   }
 }

@@ -3,7 +3,7 @@
 仓库名建议：
 
 ```text
-emotioncore-for-surfcore
+EmotionCoreForDSH-surfcore
 ```
 
 显示名：
@@ -47,7 +47,7 @@ git config --global http.lowSpeedLimit 1000
 git config --global http.lowSpeedTime 600
 ```
 
-## 1. 创建 EmotionCore 私有仓库
+## 1. 创建 EmotionCore 公开仓库
 
 在 Edge 打开：
 
@@ -55,16 +55,16 @@ git config --global http.lowSpeedTime 600
 https://github.com/new
 ```
 
-- Repository name: `emotioncore-for-surfcore`
+- Repository name: `EmotionCoreForDSH-surfcore`
 - Description: `EmotionCore for SurfCore`
-- 选 **Private**
+- 选 **Public**
 - 不要勾选 README / .gitignore / license
 
 然后：
 
 ```powershell
 cd <REPO_ROOT>
-git remote add origin https://github.com/jiygfu/emotioncore-for-surfcore.git
+git remote add origin https://github.com/jiygfu/EmotionCoreForDSH-surfcore.git
 git push -u origin main
 ```
 
@@ -104,7 +104,13 @@ https://ghfast.top/https://github.com/Mieksido/surfcore.git
 https://gh-proxy.com/https://github.com/Mieksido/surfcore.git
 ```
 
-- **push 走镜像不一定可用**；push 尽量用 `https://github.com/jiygfu/surfcore.git`。
+- **push 走镜像不一定可用**；国内网络优先用 SSH over 443：
+
+```text
+ssh://git@ssh.github.com:443/jiygfu/EmotionCoreForDSH-surfcore.git
+```
+
+- 公钥需要加到 GitHub `Settings → SSH and GPG keys`；不要把 token 写进仓库。
 - 如果 push 卡住，先确认 Git Credential Manager 已登录；不要把 token 写进仓库。
 - 大文件不要提交：`downloads/`、`data/`、模型文件、数据库。
 

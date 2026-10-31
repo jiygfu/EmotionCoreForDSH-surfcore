@@ -1,8 +1,8 @@
 /**
- * SoulCore settings surface (Host half).
+ * EmotionCore (internal id: soulcore-settings) settings surface (Host half).
  *
  * The browser half renders the settings.section page. This half owns the
- * read/write boundary and runs local SoulCore commands on demand.
+ * read/write boundary and runs local EmotionCore commands on demand.
  *
  * Security: loopback only; mutations require same-origin + JSON.
  */
@@ -10,20 +10,34 @@ import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export const name = 'soulcore-settings'
 export const inject = ['webServer']
 
-const ROOT = 'F:\\BaiduNetdiskDownload\\soulproject'
+const ROOT = process.env.EMOTIONCORE_ROOT
+  ? path.resolve(process.env.EMOTIONCORE_ROOT)
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const DATA = path.join(ROOT, 'data')
+const SURFCORE_ROOT = process.env.SURFCORE_ROOT || path.join(process.env.USERPROFILE || '', '.dsh', 'surfcore')
+// The bridge writes prompt artifacts under the SurfCore working root, not the
+// character directory. Keep them separate: character data vs runtime state.
+const STATE_DIR = process.env.SURFCORE_STATE_DIR || path.join(process.env.USERPROFILE || '', 'surfcore', 'state')
 const SETTINGS_PATH = path.join(DATA, 'soul-bridge-settings.json')
 const CALL_LOG = path.join(DATA, 'memory-tool-calls.jsonl')
-const SURFCORE_ROOT = 'C:\\Users\\li\\.dsh\\surfcore'
-const SIDECAR_FALLBACK = 'C:\\Users\\li\\.dsh\\surfcore\\characters\\char-mvs9rp0d\\memory\\memory-card-full.soulcore.jsonl'
+const CAPABILITIES_PATH = path.join(DATA, 'capabilities.json')
+const BODY_PATH = path.join(DATA, 'body-state.json')
+const BALANCE_PATH = path.join(DATA, 'balance.json')
+const BUDGET_PATH = path.join(DATA, 'session-budget.json')
+const SLEEP_PATH = path.join(DATA, 'sleep-farewell.json')
+const EPISODE_INDEX = path.join(STATE_DIR, 'episode-index.json')
+const EPISODE_CARDS = path.join(STATE_DIR, 'episode-cards.md')
+const SKILL_MANIFEST = path.join(STATE_DIR, 'skill-manifest.md')
+const SIDECAR_FALLBACK = path.join(SURFCORE_ROOT, 'characters', 'current', 'memory', 'memory-card-full.soulcore.jsonl')
 
 // 鱼鱼找鸡（QQ 反查插件）运行器：随 SoulCore 一起启停。
 // 运行器本身在 ~/.dsh/surfcore/yuyu-fish/，只连 SnowLuma 的 OneBot，只理 SurfCore 白名单。
-const FISH_DIR = process.env.SOULCORE_FISH_DIR || 'C:\\Users\\li\\.dsh\\surfcore\\yuyu-fish'
+const FISH_DIR = process.env.SOULCORE_FISH_DIR || path.join(SURFCORE_ROOT, 'yuyu-fish')
 const FISH_RUNNER = path.join(FISH_DIR, 'runner.mjs')
 const FISH_LOG = path.join(FISH_DIR, 'runner.log')
 const FISH_PID = path.join(FISH_DIR, 'runner.pid')
@@ -36,7 +50,7 @@ const DEFAULTS = {
   mark: false,
   timeoutMs: 4000,
   maxInflight: 2,
-  pythonPath: 'C:\\Users\\li\\.dsh\\dsh-runtimes\\dsh-primary-runtime\\dependencies\\python\\python.exe',
+  pythonPath: process.env.SOULCORE_PYTHON || 'python',
   nodePath: 'node',
   dbPath: path.join(DATA, 'soulcore.db'),
 }
@@ -110,6 +124,28 @@ async function saveSettings(settings) {
   const { rename } = await import('node:fs/promises')
   await rename(tmp, SETTINGS_PATH)
   return next
+}
+
+async function readJson(filePath, fallback = null) {
+  try {
+    return JSON.parse(await readFile(filePath, 'utf8'))
+  } catch {
+    return fallback
+  }
+}
+
+async function writeJson(filePath, value) {
+  await mkdir(path.dirname(filePath), { recursive: true })
+  const tmp = `${filePath}.tmp`
+  await writeFile(tmp, JSON.stringify(value, null, 2) + '\n', 'utf8')
+  const { rename } = await import('node:fs/promises')
+  await rename(tmp, filePath)
+  return value
+}
+
+function parseJsonOutput(result) {
+  if (!result?.ok) return null
+  try { return JSON.parse(result.output) } catch { return null }
 }
 
 // ── 鱼鱼找鸡运行器：宿主侧启停 ────────────────────────────────────────────────
@@ -258,6 +294,8 @@ async function state(ctx) {
   const settings = await loadSettings()
   const tools = ctx.get('tools')
   const toolRegistered = Boolean(tools?.get?.('soulcore_memory'))
+  const statsResult = await runPython(settings, ['memory-stats'], 20000)
+  const memory = parseJsonOutput(statsResult)
   return {
     ok: true,
     root: ROOT,
@@ -266,6 +304,16 @@ async function state(ctx) {
     toolRegistered,
     fish: await fishStatus(),
     db: await fileInfo(settings.dbPath),
+    memory,
+    memoryError: memory ? null : (statsResult.error || 'memory-stats failed'),
+    capabilities: await readJson(CAPABILITIES_PATH, {}),
+    body: await readJson(BODY_PATH, null),
+    balance: await readJson(BALANCE_PATH, null),
+    budget: await readJson(BUDGET_PATH, null),
+    sleep: await readJson(SLEEP_PATH, null),
+    episodeIndex: await fileInfo(EPISODE_INDEX),
+    episodeCards: await fileInfo(EPISODE_CARDS),
+    skillManifest: await fileInfo(SKILL_MANIFEST),
     sidecar: await sidecarInfo(),
     calls: await tailCalls(8),
     recentCallCount: (await tailCalls(500)).length,
@@ -278,6 +326,23 @@ async function action(ctx, body) {
   if (kind === 'save') {
     const next = await saveSettings(body.settings)
     return { ok: true, settings: next, message: '设置已保存' }
+  }
+  if (kind === 'capability') {
+    const key = String(body.key || '')
+    const allowed = new Set(['qq', 'pet', 'bili', 'l2', 'inject', 'memory_prompt'])
+    if (!allowed.has(key)) return { ok: false, error: `unknown capability: ${key}` }
+    const caps = await readJson(CAPABILITIES_PATH, {})
+    caps[key] = body.value === true
+    await writeJson(CAPABILITIES_PATH, caps)
+    return { ok: true, capabilities: caps, message: '能力开关已更新' }
+  }
+  if (kind === 'rebuild-fts') {
+    const result = await runPython(settings, ['fts-rebuild'], 30000)
+    return { ...result, message: result.ok ? 'FTS 索引已重建' : 'FTS 重建失败' }
+  }
+  if (kind === 'episode-cards') {
+    const result = await runPython(settings, ['episode-cards'], 30000)
+    return { ...result, message: result.ok ? 'L2 事件卡已重建' : 'L2 重建失败' }
   }
   if (kind === 'test') {
     const query = String(body.query || 'AI').slice(0, 100)

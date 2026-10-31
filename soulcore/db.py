@@ -443,6 +443,25 @@ CREATE TABLE IF NOT EXISTS skill_requests (
   status TEXT DEFAULT 'pending',
   created_at TEXT NOT NULL
 );
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+  memory_id UNINDEXED,
+  text,
+  tokenize = 'unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
+  INSERT INTO memories_fts(memory_id, text) VALUES (new.id, new.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE OF text ON memories BEGIN
+  DELETE FROM memories_fts WHERE memory_id = old.id;
+  INSERT INTO memories_fts(memory_id, text) VALUES (new.id, new.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+  DELETE FROM memories_fts WHERE memory_id = old.id;
+END;
 """
 
 
@@ -467,6 +486,36 @@ def init_db(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "memories", "conversation_key", "TEXT")
     _ensure_column(conn, "memories", "speaker", "TEXT")
     _ensure_column(conn, "memories", "identity_status", "TEXT DEFAULT 'unknown'")
+    # Minimal memory-science fields (Mnemosyne-inspired), additive only.
+    _ensure_column(conn, "memories", "source_kind", "TEXT DEFAULT 'dialog'")
+    _ensure_column(conn, "memories", "status", "TEXT DEFAULT 'active'")
+    _ensure_column(conn, "memories", "version", "INTEGER DEFAULT 1")
+    _ensure_column(conn, "memories", "valid_from", "TEXT")
+    _ensure_column(conn, "memories", "valid_to", "TEXT")
+    _ensure_column(conn, "memories", "last_confirmed_at", "TEXT")
+    _ensure_column(conn, "episodes", "source_kind", "TEXT")
+    conn.execute(
+        "UPDATE episodes SET source_kind='dialog' WHERE source_kind IS NULL OR source_kind=''"
+    )
+    conn.execute(
+        """UPDATE memories SET source_kind =
+             CASE
+               WHEN source='surface-correction' THEN 'correction'
+               WHEN identity_status='self' THEN 'agent_dialogue'
+               ELSE 'dialog'
+             END
+           WHERE source_kind IS NULL OR source_kind=''"""
+    )
+    conn.execute(
+        "UPDATE memories SET status='active' WHERE status IS NULL OR status=''"
+    )
+    # Backfill FTS rows for databases created before the FTS index existed.
+    conn.execute(
+        """INSERT INTO memories_fts(memory_id, text)
+           SELECT id, text FROM memories
+           WHERE id NOT IN (SELECT memory_id FROM memories_fts)"""
+    )
+    conn.commit()
     _ensure_column(conn, "people", "stance", "TEXT DEFAULT 'casual'")
     _ensure_column(conn, "people", "action_hint", "TEXT")
     _ensure_column(conn, "people", "profile_status", "TEXT DEFAULT 'none'")

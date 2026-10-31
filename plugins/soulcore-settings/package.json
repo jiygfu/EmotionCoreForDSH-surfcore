@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "SoulCore settings tab for DSH: memory tool switches, local runtime paths, actions and call history.",
+  "description": "EmotionCore (SoulCore-compatible) settings tab for DSH: memory/FTS/L2 status, capabilities, runtime paths and actions.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

@@ -132,31 +132,83 @@ window.__ModuleLoader__.load({
       const sidecar = status?.sidecar || {}
       const fish = status?.fish || {}
       const fishOn = settings.fishRunner === true
+      const memory = status?.memory || {}
+      const caps = status?.capabilities || {}
+      const body = status?.body || {}
+      const bodyRaw = body.raw || {}
+      const balance = status?.balance || {}
+      const ftsOk = Number(memory.fts_rows || 0) > 0
+      const l2Ok = status?.episodeIndex?.exists === true
+      const memCount = Number(memory.memories || 0)
+      const episodeCount = Number(memory.episodes || 0)
 
       return h('div', { style: styles.page },
         h('div', { style: styles.hero },
-          h('div', { style: styles.title }, 'SoulCore 记忆与潜意识'),
+          h('div', { style: styles.title }, 'EmotionCore 记忆与潜意识'),
           h('div', { style: styles.badge },
             h('span', { style: styles.dot(toolOk ? C.ok : C.warn) }),
             toolOk ? '记忆工具在线' : '记忆工具未注册',
           ),
         ),
-        h('div', { style: styles.subtitle }, '本地评价、情感与记忆索引的开关和运行入口。原文由 SurfCore 保存，SoulCore 只做增强。'),
+        h('div', { style: styles.subtitle }, 'EmotionCore for DSH / SurfCore：本地记忆、评价、L2 事件索引与系统状态。原文由 SurfCore 保存，EmotionCore 只做增强；内部兼容 ID 仍为 soulcore。'),
 
         h('div', { style: styles.grid },
-          h('div', { style: styles.card }, h('div', { style: styles.label }, '记忆工具'), h('div', { style: { ...styles.value, color: toolOk ? C.ok : C.warn } }, toolOk ? '已注册' : '未注册')),
-          h('div', { style: styles.card }, h('div', { style: styles.label }, '本地数据库'), h('div', { style: { ...styles.value, color: dbOk ? C.ok : C.err } }, dbOk ? `${(status.db.bytes / 1024).toFixed(0)} KB` : '未找到')),
-          h('div', { style: styles.card }, h('div', { style: styles.label }, 'SurfCore sidecar'), h('div', { style: styles.value }, sidecar.exists ? `${sidecar.enrichment || 0} + ${sidecar.extension || 0}` : '未导出')),
-          h('div', { style: styles.card }, h('div', { style: styles.label }, '记忆查询调用'), h('div', { style: styles.value }, String(status?.recentCallCount || 0))),
-          h('div', { style: styles.card },
-            h('div', { style: styles.label }, '鱼鱼找鸡'),
-            h('div', { style: { ...styles.value, color: fish.running ? C.ok : C.muted } }, fish.running ? `运行中` : '未运行')),
+          h('div', { style: styles.card }, h('div', { style: styles.label }, '长期记忆'), h('div', { style: { ...styles.value, color: memCount ? C.ok : C.warn } }, memCount ? `${memCount} 条` : '—')),
+          h('div', { style: styles.card }, h('div', { style: styles.label }, 'FTS5 索引'), h('div', { style: { ...styles.value, color: ftsOk ? C.ok : C.warn } }, ftsOk ? `${memory.fts_rows} 条` : '未建立')),
+          h('div', { style: styles.card }, h('div', { style: styles.label }, '事件索引'), h('div', { style: styles.value }, `${episodeCount} 个`)),
+          h('div', { style: styles.card }, h('div', { style: styles.label }, 'L2 事件卡'), h('div', { style: { ...styles.value, color: l2Ok ? C.ok : C.muted } }, l2Ok ? '已生成' : '未生成')),
+          h('div', { style: styles.card }, h('div', { style: styles.label }, 'API 余额'), h('div', { style: styles.value }, balance.balance == null ? '—' : `${balance.balance} ${balance.currency || 'CNY'}`)),
+          h('div', { style: styles.card }, h('div', { style: styles.label }, '鱼鱼找鸡'), h('div', { style: { ...styles.value, color: fish.running ? C.ok : C.muted } }, fish.running ? '运行中' : '未运行')),
+        ),
+
+        h('div', { style: styles.section },
+          h('div', { style: styles.sectionTitle }, '运行状态'),
+          h('div', { style: styles.sectionHint }, '本地库与系统状态；私聊/群聊共用同一套长期记忆，会话窗口分开只是聊天记录分开。'),
+          h(Row, { first: true, name: '记忆分布', desc: `private ${memory.by_scope?.private || 0} · group ${memory.by_scope?.group || 0} · pet ${memory.by_scope?.pet || 0} · 其他 ${Math.max(0, memCount - (memory.by_scope?.private || 0) - (memory.by_scope?.group || 0) - (memory.by_scope?.pet || 0))}` },
+            h('span', { style: styles.badge }, `status: ${memory.by_status?.active || 0} active`)),
+          h(Row, { name: '记忆索引', desc: 'FTS5 全文索引，纯 SQLite；不调用模型。' },
+            h('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+              h('span', { style: styles.badge }, ftsOk ? '可用' : '缺失'),
+              h('button', { style: styles.button2, disabled: !!busy, onClick: () => void doAction('rebuild-fts') }, busy === 'rebuild-fts' ? '重建中…' : '重建 FTS'))),
+          h(Row, { name: 'L2 事件索引', desc: '按天生成 episode 索引；静态卡会保留私聊/群聊各至少一张。' },
+            h('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+              h('span', { style: styles.badge }, l2Ok ? `${Math.round((status.episodeIndex.bytes || 0) / 1024)} KB` : '未生成'),
+              h('button', { style: styles.button2, disabled: !!busy, onClick: () => void doAction('episode-cards') }, busy === 'episode-cards' ? '生成中…' : '重建 L2'))),
+          h(Row, { name: '技能清单', desc: status?.skillManifest?.exists ? '本会话首次唤醒注入一次；之后按需打开，不重复占预算。' : '未生成' },
+            h('span', { style: styles.badge }, status?.skillManifest?.exists ? `${Math.round((status.skillManifest.bytes || 0) / 1024)} KB` : '未生成')),
+          h(Row, { name: '评价/问题队列', desc: `待评价 ${memory.pending_appraisals ?? 0} 条 · 待确认问题 ${memory.pending_questions ?? 0} 个` },
+            h('span', { style: styles.badge }, (memory.pending_appraisals || memory.pending_questions) ? '有待处理' : '已清空')),
+          h(Row, { name: '身体状态（临时）', desc: `CPU ${bodyRaw.cpu_pct ?? '—'}% · 内存 ${bodyRaw.mem_pct ?? '—'}% · 余额 ${bodyRaw.balance ?? '—'}` },
+            h('span', { style: styles.badge }, body.temporary_only ? '只影响语气，不写 P' : '未刷新')),
+          h(Row, { name: '睡眠收尾', desc: status?.sleep?.enabled ? String(status.sleep.message || '已启用') : '未启用' },
+            h('span', { style: styles.badge }, status?.sleep?.enabled ? '睡前说一句' : '关闭')),
+          h(Row, { name: '会话预算', desc: status?.budget?.enabled ? `cacheHit > ${status.budget.maxCacheHit || '—'} 时轮换；每 ${Math.round((status.budget.intervalMs || 0) / 60000)} 分钟检查` : '未启用' },
+            h('span', { style: styles.badge }, status?.budget?.enabled ? '轮换中' : '关闭')),
+          h(Row, { name: '本地数据库', desc: status?.db?.exists ? `${(status.db.bytes / 1024).toFixed(0)} KB · ${status.settingsPath}` : '未找到' },
+            h('span', { style: styles.badge }, dbOk ? '已连接' : '缺失')),
+        ),
+
+        h('div', { style: styles.section },
+          h('div', { style: styles.sectionTitle }, '上下文与能力'),
+          h('div', { style: styles.sectionHint }, '改完保存或直接切换；Soul-Bridge 下一次读取即生效。L2/inject 关闭后不注入对应内容。'),
+          h(Row, { first: true, name: 'L2 事件卡注入', desc: '睡眠后首次唤醒注入事件索引；关闭则只保留记忆卡回退。' },
+            h(Toggle, { checked: caps.l2 === true, disabled: !!busy, onChange: (v) => void doAction('capability', { key: 'l2', value: v }) })),
+          h(Row, { name: 'EmotionCore 上下文注入', desc: 'P、身体状态、技能清单等系统上下文；关闭后不注入。' },
+            h(Toggle, { checked: caps.inject === true, disabled: !!busy, onChange: (v) => void doAction('capability', { key: 'inject', value: v }) })),
+          h(Row, { name: '记忆卡回退', desc: 'L2 没有可用卡时，回退到 SurfCore 的完整记忆卡。' },
+            h(Toggle, { checked: caps.memory_prompt === true, disabled: !!busy, onChange: (v) => void doAction('capability', { key: 'memory_prompt', value: v }) })),
+          h(Row, { name: 'QQ 能力', desc: 'QQ 桥接/群聊/私聊能力开关。' },
+            h(Toggle, { checked: caps.qq === true, disabled: !!busy, onChange: (v) => void doAction('capability', { key: 'qq', value: v }) })),
+          h(Row, { name: '桌宠能力', desc: '桌宠 UI；当前未启用时不注入相关 prompt。' },
+            h(Toggle, { checked: caps.pet === true, disabled: !!busy, onChange: (v) => void doAction('capability', { key: 'pet', value: v }) })),
+          h(Row, { name: 'B 站能力', desc: 'B 站观察/记忆；关闭时不注入 B 站 prompt。' },
+            h(Toggle, { checked: caps.bili === true, disabled: !!busy, onChange: (v) => void doAction('capability', { key: 'bili', value: v }) })),
         ),
 
         h('div', { style: styles.section },
           h('div', { style: styles.sectionTitle }, '功能开关'),
-          h('div', { style: styles.sectionHint }, '改完保存，soul-bridge 下一次调用即读取新值。'),
-          h(Row, { first: true, name: '记忆查询工具', desc: '允许 agent 调用 soulcore_memory 查本地记忆。' },
+          h('div', { style: styles.sectionHint }, '改完保存，Soul-Bridge 下一次调用即读取新值；记忆查询默认跨私聊/群聊。'),
+          h(Row, { first: true, name: '记忆查询工具', desc: '允许 agent 调用 soulcore_memory 查本地长期记忆（默认全局库）。' },
             h(Toggle, { checked: settings.memoryTool !== false, onChange: (v) => set('memoryTool', v) })),
           h(Row, { name: '影子检索日志', desc: '监听模型请求，把本地召回与 P 写入 shadow 日志；不改写请求。' },
             h(Toggle, { checked: settings.shadowEnabled !== false, onChange: (v) => set('shadowEnabled', v) })),
@@ -166,12 +218,12 @@ window.__ModuleLoader__.load({
 
         h('div', { style: styles.section },
           h('div', { style: styles.sectionTitle }, '运行参数'),
-          h('div', { style: styles.sectionHint }, '路径和超时只影响本机 SoulCore；不会发到 QQ。'),
+          h('div', { style: styles.sectionHint }, '路径和超时只影响本机 EmotionCore；不会发到 QQ。'),
           h(Row, { first: true, name: 'Python 路径', desc: '用于记忆查询、评价和 sidecar 导出。' },
             h('input', { style: styles.input, value: settings.pythonPath || '', onChange: (e) => set('pythonPath', e.target.value) })),
           h(Row, { name: 'SQLite 路径', desc: '本地索引与评价库。' },
             h('input', { style: styles.input, value: settings.dbPath || '', onChange: (e) => set('dbPath', e.target.value) })),
-          h(Row, { name: 'Node 路径', desc: '调用 SurfCore 内置 recallFullMemory 的脚本。' },
+          h(Row, { name: 'Node 路径', desc: '仅 mode=surfcore 的显式兼容召回会用到；默认检索不经过 SurfCore 内置记忆。' },
             h('input', { style: styles.input, value: settings.nodePath || 'node', onChange: (e) => set('nodePath', e.target.value) })),
           h(Row, { name: '单次超时（ms）', desc: '工具/影子调用的上限。' },
             h('input', { style: { ...styles.input, width: 120 }, type: 'number', min: 1000, max: 120000, value: settings.timeoutMs || 4000, onChange: (e) => set('timeoutMs', Number(e.target.value)) })),
@@ -181,8 +233,8 @@ window.__ModuleLoader__.load({
 
         h('div', { style: styles.section },
           h('div', { style: styles.sectionTitle }, '鱼鱼找鸡（QQ 反查）'),
-          h('div', { style: styles.sectionHint }, '随 SoulCore / SurfCore 一起启停。它只连 SnowLuma 的 OneBot，只理 SurfCore 白名单里的群和私聊。用法：引用一张图，发「鱼鱼找鸡」。'),
-          h(Row, { first: true, name: '运行器随 SoulCore 启停', desc: fish.running ? `运行中 · pid ${fish.pid}` : '未运行（关掉开关或退出 DSH 就会停）' },
+          h('div', { style: styles.sectionHint }, '随 EmotionCore / SurfCore 一起启停。它只连 SnowLuma 的 OneBot，只理 SurfCore 白名单里的群和私聊。用法：引用一张图，发「鱼鱼找鸡」。'),
+          h(Row, { first: true, name: '运行器随 EmotionCore 启停', desc: fish.running ? `运行中 · pid ${fish.pid}` : '未运行（关掉开关或退出 DSH 就会停）' },
             h(Toggle, {
               checked: fishOn,
               disabled: !!busy,
@@ -217,7 +269,7 @@ window.__ModuleLoader__.load({
 
         h('div', { style: styles.section },
           h('div', { style: styles.sectionTitle }, '最近记忆查询调用'),
-          h('div', { style: styles.sectionHint }, '来自 soulproject/data/memory-tool-calls.jsonl；能看到 backend 和结果数。'),
+          h('div', { style: styles.sectionHint }, '来自 EmotionCore 的 memory-tool-calls.jsonl；能看到 backend 和结果数。'),
           (status?.calls || []).length === 0
             ? h('div', { style: styles.rowDesc }, '还没有调用记录。')
             : h('table', { style: styles.table },
@@ -245,7 +297,7 @@ window.__ModuleLoader__.load({
           name: 'settings.section',
           id: 'soulcore',
           order: 8,
-          label: 'SoulCore',
+          label: 'EmotionCore',
         }, Section))
       },
     }

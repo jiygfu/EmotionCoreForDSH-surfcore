@@ -12,10 +12,113 @@ No LLM call. This is the "subconscious recognition" layer.
 from __future__ import annotations
 
 import math
+import re
 import sqlite3
 from typing import Any
 
 from . import db
+
+
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_QUERY_SPLIT_RE = re.compile(r"[\s,，。.!！?？;；:：/\\|]+")
+
+
+def _query_terms(query: str, *, max_terms: int = 16) -> list[str]:
+    """Chinese has no spaces; use 2-char shingles for FTS/LIKE fallback."""
+    terms: list[str] = []
+    for token in _QUERY_SPLIT_RE.split(query or ""):
+        token = token.strip()
+        if not token:
+            continue
+        if _CJK_RE.search(token):
+            if len(token) <= 2:
+                terms.append(token)
+            else:
+                terms.extend(token[i:i + 2] for i in range(len(token) - 1))
+        else:
+            terms.append(token)
+    out: list[str] = []
+    for term in terms:
+        if term not in out:
+            out.append(term)
+        if len(out) >= max_terms:
+            break
+    return out
+
+
+def _fts_query(query: str) -> str:
+    terms = _query_terms(query)
+    return " OR ".join('"' + t.replace('"', '""') + '"' for t in terms)
+
+
+def search_memories(
+    conn: sqlite3.Connection,
+    query: str,
+    *,
+    limit: int = 10,
+    scope: str | None = None,
+    person_id: str | None = None,
+    include_sensitive: bool = False,
+) -> list[dict[str, Any]]:
+    """FTS5-first memory search; degrade to local 2-gram ranking.
+
+    Kept separate from ``retrieve``: familiarity/trigger tracking must not be
+    narrowed by a full-text prefilter.
+    """
+    query = (query or "").strip()
+    if not query:
+        return []
+    where = [] if include_sensitive else ["m.sensitive=0"]
+    params: list[Any] = []
+    if scope:
+        where.append("m.scope=?")
+        params.append(scope)
+    if person_id:
+        where.append("m.person_id=?")
+        params.append(person_id)
+    where.append("memories_fts MATCH ?")
+    where_sql = "WHERE " + " AND ".join(where)
+    rows: list[sqlite3.Row] = []
+    try:
+        rows = conn.execute(
+            f"""SELECT m.* FROM memories_fts f
+                JOIN memories m ON m.id=f.memory_id
+                {where_sql}
+                ORDER BY bm25(memories_fts) ASC
+                LIMIT ?""",
+            (*params, _fts_query(query), max(20, int(limit) * 8)),
+        ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        rows = []
+    if not rows:
+        fallback_where = [w for w in where if w != "memories_fts MATCH ?"]
+        fallback_sql = ("WHERE " + " AND ".join(fallback_where)) if fallback_where else ""
+        rows = conn.execute(
+            f"SELECT m.* FROM memories m {fallback_sql} ORDER BY COALESCE(m.ts,m.created_at) DESC LIMIT 2000",
+            tuple(params),
+        ).fetchall()
+    scored: list[tuple[float, sqlite3.Row]] = []
+    for row in rows:
+        sim = _similarity(query, row["text"])
+        if sim <= 0:
+            continue
+        importance = max(0.0, float(row["importance"] or 0.0))
+        scored.append((0.82 * sim + 0.18 * importance, row))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    out = []
+    for score, row in scored[:max(1, int(limit))]:
+        out.append({
+            "id": row["id"],
+            "score": round(score, 4),
+            "similarity": _similarity(query, row["text"]),
+            "scope": row["scope"],
+            "speaker": row["speaker"],
+            "person_id": row["person_id"],
+            "identity_status": row["identity_status"] or "unknown",
+            "ts": row["ts"],
+            "text": row["text"],
+        })
+    return out
 
 
 def _grams(text: str, n: int = 2) -> set[str]:

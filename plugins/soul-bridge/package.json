@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Shadow bridge for SoulCore: observe llm/stream, call local retrieval, never rewrite the request.",
+  "description": "EmotionCore (SoulCore-compatible) shadow bridge for DSH: observe llm/stream, call local retrieval, never rewrite the request.",
   "exports": {
     ".": "./index.js",
     "./locale/*.json": "./locale/*.json",

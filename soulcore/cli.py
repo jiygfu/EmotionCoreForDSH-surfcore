@@ -109,6 +109,51 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_memory_stats(args) -> int:
+    conn = db.connect(_db_path(args))
+    db.init_db(conn)
+    def grouped(sql: str) -> dict[str, int]:
+        return {str(r[0] or "unknown"): int(r[1]) for r in conn.execute(sql).fetchall()}
+    latest = conn.execute(
+        """SELECT id, day, start_at, end_at, conversation_key, importance, source_kind,
+                  summary FROM episodes ORDER BY COALESCE(start_at, created_at) DESC LIMIT 1"""
+    ).fetchone()
+    path = _db_path(args)
+    result = {
+        "memories": conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0],
+        "fts_rows": conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0],
+        "episodes": conn.execute("SELECT COUNT(*) FROM episodes").fetchone()[0],
+        "pending_appraisals": conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE appraisal_status != 'done'"
+        ).fetchone()[0],
+        "pending_questions": conn.execute(
+            "SELECT COUNT(*) FROM appraisal_questions WHERE status='pending'"
+        ).fetchone()[0],
+        "by_scope": grouped("SELECT scope, COUNT(*) FROM memories GROUP BY scope"),
+        "by_status": grouped("SELECT status, COUNT(*) FROM memories GROUP BY status"),
+        "by_source_kind": grouped("SELECT source_kind, COUNT(*) FROM memories GROUP BY source_kind"),
+        "episodes_by_scope": grouped("SELECT conversation_key, COUNT(*) FROM episodes GROUP BY conversation_key"),
+        "latest_episode": dict(latest) if latest else None,
+        "db_bytes": path.stat().st_size if path.exists() else 0,
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_fts_rebuild(args) -> int:
+    conn = db.connect(_db_path(args))
+    db.init_db(conn)
+    conn.execute("DELETE FROM memories_fts")
+    conn.execute("INSERT INTO memories_fts(memory_id, text) SELECT id, text FROM memories")
+    conn.commit()
+    print(json.dumps({
+        "ok": True,
+        "memories": conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0],
+        "fts_rows": conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0],
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_config(args) -> int:
     conn = db.connect(_db_path(args))
     db.init_db(conn)
@@ -586,9 +631,9 @@ def cmd_memory(args) -> int:
             print(json.dumps({"error": "search requires --query"}, ensure_ascii=False, indent=2))
             return 1
         fetch_limit = limit if not (pid or scope) else max(20, limit * 4)
-        hits = retrieval.retrieve(
-            conn, query, limit=fetch_limit, mark=False, include_text=True,
-            source="surface_query",
+        hits = retrieval.search_memories(
+            conn, query, limit=fetch_limit,
+            scope=scope or None, person_id=pid or None,
         )
         if pid:
             hits = [h for h in hits if h.get("person_id") == pid]
@@ -901,6 +946,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("status", help="show counts and latest affect")
     s.add_argument("--model", default=db.MODEL)
     s.set_defaults(func=cmd_status)
+
+    s = sub.add_parser("memory-stats", help="local memory/episode/FTS counts as JSON")
+    s.set_defaults(func=cmd_memory_stats)
+
+    s = sub.add_parser("fts-rebuild", help="rebuild the local FTS5 memory index")
+    s.set_defaults(func=cmd_fts_rebuild)
 
     s = sub.add_parser("config", help="show schema, initial coefficients, appraiser config")
     s.set_defaults(func=cmd_config)

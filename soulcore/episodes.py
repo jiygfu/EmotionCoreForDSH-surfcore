@@ -40,7 +40,8 @@ def build_day(conn: sqlite3.Connection, *, day: str | None = None) -> dict[str, 
     key = day or datetime.now().astimezone().date().isoformat()
     rows = conn.execute(
         """SELECT m.id, m.text, m.ts, m.speaker, m.scope, m.conversation_key,
-                  m.importance, m.source, a.dimensions_json, a.felt, a.delta_json, a.unresolved, a.confidence
+                  m.importance, m.source, m.identity_status,
+                  a.dimensions_json, a.felt, a.delta_json, a.unresolved, a.confidence
            FROM memories m
            LEFT JOIN appraisals a ON a.id = (
              SELECT id FROM appraisals WHERE memory_id=m.id ORDER BY id DESC LIMIT 1
@@ -120,6 +121,9 @@ def build_day(conn: sqlite3.Connection, *, day: str | None = None) -> dict[str, 
             return 0.55 * affect + 0.25 * unresolved + 0.10 * confidence
         importance = max(importance, max(episode_importance(x) for x in items))
         unresolved = max(float(x["unresolved"] or 0.0) for x in items)
+        source_kind = "correction" if any(x["source"] == "surface-correction" for x in items) else (
+            "agent_dialogue" if any((x["identity_status"] or "") == "self" for x in items) else "dialog"
+        )
         eid = "ep_" + hashlib.sha1(
             f"{key}|{first['conversation_key'] or ''}|{first['ts']}|{last['id']}".encode("utf-8")
         ).hexdigest()[:16]
@@ -128,15 +132,15 @@ def build_day(conn: sqlite3.Connection, *, day: str | None = None) -> dict[str, 
             """INSERT INTO episodes
                (id, day, start_at, end_at, conversation_key, participants_json, trigger,
                 summary, key_quote, felt, delta_json, unresolved, importance,
-                raw_ids_json, topics_json, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                raw_ids_json, topics_json, source_kind, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 eid, key, first["ts"], last["ts"], first["conversation_key"] or "",
                 json.dumps(participants, ensure_ascii=False), "sleep",
                 summary, _clip(quote_row["text"], 180), str(quote_row["felt"] or ""),
                 json.dumps(delta, ensure_ascii=False), unresolved, importance,
                 json.dumps([x["id"] for x in items], ensure_ascii=False),
-                json.dumps([], ensure_ascii=False), now, now,
+                json.dumps([], ensure_ascii=False), source_kind, now, now,
             ),
         )
         created += 1
@@ -169,8 +173,23 @@ def render_cards(conn: sqlite3.Connection, *, day: str | None = None,
     rows = conn.execute(
         """SELECT * FROM episodes WHERE day=?
            ORDER BY importance DESC, start_at DESC LIMIT ?""",
-        (key, max(1, min(20, int(limit)))),
+        (key, max(1, min(80, int(limit) * 8))),
     ).fetchall()
+    # Keep private/group both represented in the static L2 fallback instead of
+    # letting one high-volume conversation occupy all five slots.
+    selected = []
+    seen_convs = set()
+    for r in rows:
+        conv = str(r["conversation_key"] or "")
+        if conv and conv not in seen_convs:
+            selected.append(r)
+            seen_convs.add(conv)
+    for r in rows:
+        if len(selected) >= max(1, min(20, int(limit))):
+            break
+        if r not in selected:
+            selected.append(r)
+    rows = selected[:max(1, min(20, int(limit)))]
     if not rows:
         return ""
     lines = ["【事件索引（L2；原始记忆仍在本地，需要细节再查）】"]
@@ -208,8 +227,36 @@ def _state_dir() -> Path:
     return Path.home() / ".dsh" / "surfcore" / "state"
 
 
+def write_index(conn: sqlite3.Connection, *, days: int = 7,
+                out: str | None = None) -> str:
+    """Write a compact local index for query-aware L2 selection."""
+    target = Path(out) if out else (_state_dir() / "episode-index.json")
+    rows = conn.execute(
+        """SELECT id, day, start_at, end_at, participants_json, summary, key_quote,
+                  felt, importance, unresolved, source_kind, raw_ids_json
+           FROM episodes
+           WHERE day >= date('now','localtime', ?)
+           ORDER BY start_at DESC LIMIT 200""",
+        (f"-{max(1, int(days)) - 1} days",),
+    ).fetchall()
+    out_rows = []
+    for r in rows:
+        d = dict(r)
+        for key in ("participants_json", "raw_ids_json"):
+            try:
+                d[key[:-5]] = json.loads(d.pop(key) or "[]")
+            except Exception:
+                d[key[:-5]] = []
+                d.pop(key, None)
+        out_rows.append(d)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(out_rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return str(target)
+
+
 def write_cards(conn: sqlite3.Connection, *, day: str | None = None,
                 out: str | None = None) -> str:
+    write_index(conn)
     text = render_cards(conn, day=day)
     target = Path(out) if out else (_state_dir() / "episode-cards.md")
     if not text:

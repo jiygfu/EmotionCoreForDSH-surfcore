@@ -142,6 +142,22 @@ def resolve(
             "surface": True,
         },
     )
+    # Minimal version/status chain; the old raw record stays queryable.
+    now = db.utcnow()
+    new_version = int(old["version"] or 1) + 1
+    conn.execute(
+        """UPDATE memories
+           SET source_kind='correction', status='active', version=?,
+               valid_from=?, last_confirmed_at=?, updated_at=?
+           WHERE id=?""",
+        (new_version, now, now, now, new_id),
+    )
+    conn.execute(
+        """UPDATE memories
+           SET status='superseded', valid_to=?, consolidation_state='superseded', updated_at=?
+           WHERE id=?""",
+        (now, now, old["id"]),
+    )
     db.save_appraisal(
         conn, new_id,
         dimensions=dims,
