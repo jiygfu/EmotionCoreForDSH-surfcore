@@ -150,7 +150,7 @@ window.__ModuleLoader__.load({
             toolOk ? '记忆工具在线' : '记忆工具未注册',
           ),
         ),
-        h('div', { style: styles.subtitle }, 'EmotionCore for DSH / SurfCore：本地记忆、评价、L2 事件索引与系统状态。原文由 SurfCore 保存，EmotionCore 只做增强；内部兼容 ID 仍为 soulcore。'),
+        h('div', { style: styles.subtitle }, `EmotionCore for DSH / SurfCore · v${status?.version || '0.3.0'}：本地记忆、评价、L2 事件索引与系统状态。原文由 SurfCore 保存，EmotionCore 只做增强；内部兼容 ID 仍为 soulcore。`),
 
         h('div', { style: styles.grid },
           h('div', { style: styles.card }, h('div', { style: styles.label }, '长期记忆'), h('div', { style: { ...styles.value, color: memCount ? C.ok : C.warn } }, memCount ? `${memCount} 条` : '—')),

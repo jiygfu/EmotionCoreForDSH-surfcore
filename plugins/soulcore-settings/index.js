@@ -24,6 +24,7 @@ const SURFCORE_ROOT = process.env.SURFCORE_ROOT || path.join(process.env.USERPRO
 // character directory. Keep them separate: character data vs runtime state.
 const STATE_DIR = process.env.SURFCORE_STATE_DIR || path.join(process.env.USERPROFILE || '', 'surfcore', 'state')
 const SETTINGS_PATH = path.join(DATA, 'soul-bridge-settings.json')
+const VERSION_PATH = path.join(ROOT, 'VERSION')
 const CALL_LOG = path.join(DATA, 'memory-tool-calls.jsonl')
 const CAPABILITIES_PATH = path.join(DATA, 'capabilities.json')
 const BODY_PATH = path.join(DATA, 'body-state.json')
@@ -297,8 +298,11 @@ async function state(ctx) {
   const toolRegistered = Boolean(tools?.get?.('soulcore_memory'))
   const statsResult = await runPython(settings, ['memory-stats'], 20000)
   const memory = parseJsonOutput(statsResult)
+  let version = '0.3.0'
+  try { version = (await readFile(VERSION_PATH, 'utf8')).trim() || version } catch {}
   return {
     ok: true,
+    version,
     root: ROOT,
     settingsPath: SETTINGS_PATH,
     settings,
