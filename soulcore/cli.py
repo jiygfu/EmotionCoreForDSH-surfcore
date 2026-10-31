@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import (affect, appraise, appraisal_learning, balance, body_state, consolidate, context_render, correction, daybook, db, desire, dream,
+from . import (affect, appraise, appraisal_learning, balance, body_state, consolidate, context_render, correction, daybook, db, desire, dream, handoff,
                episodes, inbox, local_assist, people, personality, purpose_seed, retrieval, session_rotation, skill_manifest, skills, sleep_farewell, social, surfcore_export)
 
 try:
@@ -109,6 +109,14 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_handoff(args) -> int:
+    conn = db.connect(_db_path(args))
+    db.init_db(conn)
+    result = handoff.write(conn)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_memory_stats(args) -> int:
     conn = db.connect(_db_path(args))
     db.init_db(conn)
@@ -123,6 +131,9 @@ def cmd_memory_stats(args) -> int:
         "memories": conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0],
         "fts_rows": conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0],
         "episodes": conn.execute("SELECT COUNT(*) FROM episodes").fetchone()[0],
+        "sleep_runs_today": conn.execute(
+            "SELECT COUNT(*) FROM sleep_runs WHERE day_key=date('now','localtime')"
+        ).fetchone()[0],
         "pending_appraisals": conn.execute(
             "SELECT COUNT(*) FROM memories WHERE appraisal_status != 'done'"
         ).fetchone()[0],
@@ -815,6 +826,12 @@ def cmd_sleep(args) -> int:
     seed = purpose_seed.write(conn)
     farewell = sleep_farewell.maybe_send("sleep")
     rotated = session_rotation.rotate_all(reason="sleep")
+    sleep_count = db.record_sleep(
+        conn, day_key=dr["day_key"], reason="sleep",
+        rotated=bool(rotated.get("ok")), farewell_sent=bool(farewell.get("sent")),
+        details={"dream_id": dr["dream_id"], "rotation": rotated},
+    )
+    brief = handoff.write(conn)
     packet = {
         "day_key": dr["day_key"],
         "daily_baseline": baseline,
@@ -832,6 +849,8 @@ def cmd_sleep(args) -> int:
         "purpose_seed": seed,
         "sleep_farewell": farewell,
         "session_rotation": rotated,
+        "sleep_count": sleep_count,
+        "handoff": brief.get("path"),
         "generated_at": db.utcnow(),
     }
     out_dir = db.ROOT / "sleep"
@@ -881,6 +900,12 @@ def cmd_daily(args) -> int:
     seed = purpose_seed.write(conn)
     farewell = sleep_farewell.maybe_send("daily")
     rotated = session_rotation.rotate_all(reason="daily")
+    sleep_count = db.record_sleep(
+        conn, day_key=dr["day_key"], reason="daily",
+        rotated=bool(rotated.get("ok")), farewell_sent=bool(farewell.get("sent")),
+        details={"rotation": rotated},
+    )
+    brief = handoff.write(conn)
     out = {
         "day_key": dr["day_key"],
         "identity_repaired": repaired,
@@ -895,6 +920,8 @@ def cmd_daily(args) -> int:
         "purpose_seed": seed,
         "sleep_farewell": farewell,
         "session_rotation": rotated,
+        "sleep_count": sleep_count,
+        "handoff": brief.get("path"),
         "ambient": cons.get("ambient"),
         "dream": {
             "today_important": dr["today_important"],
@@ -949,6 +976,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("memory-stats", help="local memory/episode/FTS counts as JSON")
     s.set_defaults(func=cmd_memory_stats)
+
+    s = sub.add_parser("handoff", help="write deterministic sleep handoff brief")
+    s.set_defaults(func=cmd_handoff)
 
     s = sub.add_parser("fts-rebuild", help="rebuild the local FTS5 memory index")
     s.set_defaults(func=cmd_fts_rebuild)

@@ -30,6 +30,7 @@ const BODY_PATH = path.join(DATA, 'body-state.json')
 const BALANCE_PATH = path.join(DATA, 'balance.json')
 const BUDGET_PATH = path.join(DATA, 'session-budget.json')
 const SLEEP_PATH = path.join(DATA, 'sleep-farewell.json')
+const HANDOFF_PATH = path.join(DATA, 'handoff.md')
 const EPISODE_INDEX = path.join(STATE_DIR, 'episode-index.json')
 const EPISODE_CARDS = path.join(STATE_DIR, 'episode-cards.md')
 const SKILL_MANIFEST = path.join(STATE_DIR, 'skill-manifest.md')
@@ -311,6 +312,7 @@ async function state(ctx) {
     balance: await readJson(BALANCE_PATH, null),
     budget: await readJson(BUDGET_PATH, null),
     sleep: await readJson(SLEEP_PATH, null),
+    handoff: await fileInfo(HANDOFF_PATH),
     episodeIndex: await fileInfo(EPISODE_INDEX),
     episodeCards: await fileInfo(EPISODE_CARDS),
     skillManifest: await fileInfo(SKILL_MANIFEST),

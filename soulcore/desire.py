@@ -158,12 +158,18 @@ def compute(conn: sqlite3.Connection, *, now: datetime | None = None) -> dict[st
     adjusted = {k: round(deviation[k] * prof["gain"], 4) for k in deviation}
     desires: list[dict[str, Any]] = []
 
-    def add(kind: str, signal: float, hint: str, target: str, why: str) -> None:
-        urgency = _clamp(0.18 + signal - prof["threshold"])
-        if urgency < 0.18:
+    def add(kind: str, signal: float, hint: str, target: str, why: str,
+            tier: str = "major") -> None:
+        # Micro desires use a lower floor and a slightly softer threshold, but
+        # they never change the affect gain or the high-stakes thresholds.
+        floor = 0.11 if tier == "micro" else 0.20
+        local_threshold = prof["threshold"] - (0.10 if tier == "micro" else 0.0)
+        urgency = _clamp(0.18 + signal - local_threshold)
+        if urgency < floor:
             return
         desires.append({
             "kind": kind,
+            "tier": tier,
             "urgency": round(urgency, 3),
             "hint": hint,
             "target": target,
@@ -189,17 +195,23 @@ def compute(conn: sqlite3.Connection, *, now: datetime | None = None) -> dict[st
     add("connect", max(0.0, -s) * 0.8 + max(0.0, -v) * 0.5,
         "我有点想找人说话，想被陪一下。",
         "trusted_private", "社交倾向下降/负向偏离")
-    # 无聊/想玩：唤醒和开放下降。
+    # 无聊/想玩：唤醒和开放下降。低强度时只算轻量念头。
     add("play", max(0.0, -a) * 0.8 + max(0.0, -o) * 0.5,
         "我有点无聊，想找点好玩的，或者找人一起玩。",
-        "group_light", "唤醒/开放下降")
-    # 正向想分享：效价、唤醒上升。
+        "group_light", "唤醒/开放下降", tier="micro")
+    # 正向想分享：效价、唤醒上升。低强度时只算轻量念头。
     add("share", max(0.0, v) * 0.7 + max(0.0, a) * 0.4,
         "我有点想分享刚才那件事，想让人看见。",
-        "group_light", "正向偏离/唤醒上升")
+        "group_light", "正向偏离/唤醒上升", tier="micro")
+    # 轻微好奇：开放/唤醒/社交的小幅上升，不升级成高 stakes 欲望。
+    add("curious", max(0.0, o) * 0.28 + max(0.0, a) * 0.16 + max(0.0, s) * 0.10,
+        "想再多看一眼，或者顺口问一句。",
+        "group_light", "开放/唤醒轻微上升", tier="micro")
 
-    desires.sort(key=lambda x: x["urgency"], reverse=True)
-    desires = desires[:2]
+    desires.sort(key=lambda x: (x["urgency"], x["tier"] == "major"), reverse=True)
+    major = [d for d in desires if d.get("tier") == "major"][:2]
+    micro = [d for d in desires if d.get("tier") == "micro"][:2]
+    desires = (major + micro)[:3]
     lines = []
     if desires:
         lines.append("【此刻欲望（临时，不是命令）】")
@@ -209,8 +221,9 @@ def compute(conn: sqlite3.Connection, *, now: datetime | None = None) -> dict[st
                 "trusted_private": "优先私聊信任的人",
                 "group_light": "公开场合只说轻的",
             }.get(d["target"], "看场合")
-            lines.append(f"- {d['hint']}（强度 {d['urgency']:.2f}；{place}）")
-        lines.append("这不是必须执行；说出去也可能没用或火上浇油，后续按真实对话重新评分，不会自动扣分。")
+            label = "轻量念头" if d.get("tier") == "micro" else "欲望"
+            lines.append(f"- {label}：{d['hint']}（强度 {d['urgency']:.2f}；{place}）")
+        lines.append("轻量念头不是必须执行；说出去也可能没用或火上浇油，后续按真实对话重新评分，不会自动扣分。")
     return {
         "schema": "emotioncore.desire.v1",
         "at": now.isoformat(),

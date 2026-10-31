@@ -321,6 +321,19 @@ CREATE TABLE IF NOT EXISTS daily_summaries (
 
 CREATE INDEX IF NOT EXISTS idx_daily_summaries_day ON daily_summaries(day_key);
 
+CREATE TABLE IF NOT EXISTS sleep_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  day_key TEXT NOT NULL,
+  reason TEXT,
+  at TEXT NOT NULL,
+  rotated INTEGER DEFAULT 0,
+  farewell_sent INTEGER DEFAULT 0,
+  details_json TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sleep_runs_day ON sleep_runs(day_key);
+
 CREATE TABLE IF NOT EXISTS people (
   id TEXT PRIMARY KEY,
   platform TEXT NOT NULL DEFAULT 'qq',
@@ -831,6 +844,30 @@ def mark_job_error(conn: sqlite3.Connection, memory_id: str, error: str) -> None
         (str(error)[:1000], now, memory_id),
     )
     conn.commit()
+
+
+def record_sleep(
+    conn: sqlite3.Connection,
+    *,
+    day_key: str,
+    reason: str,
+    at: str | None = None,
+    rotated: bool = False,
+    farewell_sent: bool = False,
+    details: dict[str, Any] | None = None,
+) -> int:
+    """Append one sleep/rotation run and return today's run count."""
+    now = at or localnow()
+    conn.execute(
+        """INSERT INTO sleep_runs(day_key, reason, at, rotated, farewell_sent, details_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (day_key, reason, now, 1 if rotated else 0, 1 if farewell_sent else 0,
+         json.dumps(details or {}, ensure_ascii=False), utcnow()),
+    )
+    conn.commit()
+    return int(
+        conn.execute("SELECT COUNT(*) FROM sleep_runs WHERE day_key=?", (day_key,)).fetchone()[0]
+    )
 
 
 def status(conn: sqlite3.Connection) -> dict[str, Any]:

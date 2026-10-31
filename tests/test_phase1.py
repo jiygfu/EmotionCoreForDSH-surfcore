@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from soulcore import affect, appraise, appraisal_learning, body_state, consolidate, correction, daybook, db, desire, dream, episodes, inbox, local_assist, people, personality, purpose_seed, retrieval, skill_manifest, skills, social, surfcore_export
+from soulcore import affect, appraise, appraisal_learning, body_state, consolidate, correction, daybook, db, desire, dream, episodes, handoff, inbox, local_assist, people, personality, purpose_seed, retrieval, skill_manifest, skills, social, surfcore_export
 
 
 DIMS = {
@@ -607,6 +607,24 @@ class Phase1Tests(unittest.TestCase):
             )
             a = affect.compute_affect(conn)
             self.assertEqual(a["memory_count"], 1)
+            conn.close()
+
+
+    def test_sleep_handoff_uses_local_facts(self):
+        with tempfile.TemporaryDirectory() as td:
+            conn = db.connect(Path(td) / "test.db")
+            db.init_db(conn)
+            db.upsert_memory(conn, source="surfcore", source_record_id="h1",
+                             text="睡前说到一半的事", ts="2026-10-31T10:00:00+08:00",
+                             speaker="主人", scope="private",
+                             conversation_key="private:1")
+            day = db.localnow()[:10]
+            db.record_sleep(conn, day_key=day, reason="sleep", rotated=True)
+            brief = handoff.build(conn)
+            self.assertEqual(brief["sleep"]["count_today"], 1)
+            self.assertIn("【交接｜刚睡醒】", brief["text"])
+            self.assertIn("第 1 次睡眠", brief["text"])
+            self.assertIn("上次停在", brief["text"])
             conn.close()
 
 
