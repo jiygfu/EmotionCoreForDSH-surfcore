@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { appendFile, readFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -11,6 +12,15 @@ const ROOT = process.env.EMOTIONCORE_ROOT
   : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SETTINGS_PATH = process.env.SOULCORE_SETTINGS_PATH
   || path.join(ROOT, 'data', 'soul-bridge-settings.json')
+
+function overviewEnabled() {
+  try {
+    const raw = JSON.parse(readFileSync(SETTINGS_PATH, 'utf8'))
+    return raw?.memoryOverview === true
+  } catch {
+    return false
+  }
+}
 
 async function runtimeConfig(base) {
   try {
@@ -270,17 +280,21 @@ export function apply(ctx, config = {}) {
     void retrySessionRotation(live)
   }).catch(() => {})
 
+  const modes = overviewEnabled()
+    ? ['overview', 'today', 'search', 'person', 'range']
+    : ['today', 'search', 'person', 'range']
+
   ctx.effect(() => ctx.tools.register({
     name: 'soulcore_memory',
-    description: '查询桌宠自己的本地长期记忆（只读，questions/resolve 例外：resolve 默认关闭，需 owner 在设置页开启，且会写修正记忆）。当对方问“你还记得/你还记得多少/查一下你的记忆/某天发生过什么/你对某人的印象”时使用。overview=总览与 P；today=今天触发；search=关键词检索，默认查 EmotionCore 全局本地库（跨私聊/群聊）；surfcore=显式使用 SurfCore 当前会话内置召回；person=某人的关系卡与最近记忆；range=按日期或时间范围查；p=当前人格基线；questions=查看待确认问题；resolve=提交表层评分与结论（默认禁用）。可用 person/scope 过滤。一次最多 20 条；truncated=true 表示只是抽样，不要声称完整记忆，也不要用想象补漏洞。identity_status=legacy_unresolved/self 的旧记录不代表主人。',
+    description: '查询本地长期记忆（只读）。today=今天触发；search=关键词检索；person=某人的关系卡与最近记忆；range=按日期/时间查；overview 仅在设置页开启调试后出现。一次最多 8 条；truncated=true 表示只是抽样，不要声称完整记忆，也不要用想象补漏洞。identity_status=legacy_unresolved/self 的旧记录不代表主人。',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         mode: {
           type: 'string',
-          enum: ['overview', 'today', 'search', 'surfcore', 'person', 'range', 'p', 'questions', 'resolve'],
-          description: '查询模式，默认 overview；search 默认走 SoulCore 全局本地库（跨私聊/群聊），surfcore 才走 SurfCore 当前会话召回；questions 看待确认问题，resolve 交表层评分',
+          enum: modes,
+          description: '查询模式，默认 today；search 查全局本地库；overview 仅在调试开关开启且重载 soul-bridge 后出现',
         },
         query: { type: 'string', description: 'search 模式的关键词' },
         person: { type: 'string', description: 'person/range 模式的 QQ 号、qq:<id> 或显示名；也可用于 search/today 过滤' },
@@ -288,24 +302,7 @@ export function apply(ctx, config = {}) {
         date: { type: 'string', description: 'range 模式：YYYY-MM-DD（本地整天）' },
         from: { type: 'string', description: 'range 模式：起始 ISO 日期/时间' },
         to: { type: 'string', description: 'range 模式：结束 ISO 日期/时间（不含）' },
-        question_id: { type: 'string', description: 'resolve 模式：待确认问题 id' },
-        answer: { type: 'string', description: 'resolve 模式：owner 的解答（可空）' },
-        summary: { type: 'string', description: 'resolve 模式：表层结论' },
-        felt: { type: 'string', description: 'resolve 模式：表层给的第一人称感受' },
-        score: {
-          type: 'object',
-          additionalProperties: false,
-          description: 'resolve 模式：表层直接给出的 8 维评分；缺省时用程序分',
-          properties: {
-            security: { type: 'number' }, trust: { type: 'number' },
-            self_efficacy: { type: 'number' }, caution: { type: 'number' },
-            sociability: { type: 'number' }, openness: { type: 'number' },
-            valence: { type: 'number' }, arousal: { type: 'number' },
-            unresolved: { type: 'number' }, confidence: { type: 'number' },
-            has_impact: { type: 'boolean' },
-          },
-        },
-        limit: { type: 'integer', minimum: 1, maximum: 20, description: '返回条数，默认 8' },
+        limit: { type: 'integer', minimum: 1, maximum: 8, description: '返回条数，默认 5，最多 8' },
       },
     },
     output: {
@@ -325,7 +322,13 @@ export function apply(ctx, config = {}) {
       if (live.memoryTool === false) {
         return { ok: false, text: 'soulcore_memory 已在 SoulCore 设置中关闭。' }
       }
-      const input = args && typeof args === 'object' ? args : {}
+      const raw = args && typeof args === 'object' ? args : {}
+      const mode = String(raw.mode || 'today')
+      // DSH may pass frozen/sealed args; never mutate them.
+      const input = { ...raw, mode }
+      if (!modes.includes(mode)) {
+        return { ok: false, text: `soulcore_memory 不支持该模式：${mode}（可用：${modes.join('/')}）` }
+      }
       if (String(input.mode || '') === 'resolve' && live.memoryResolve !== true) {
         return { ok: false, text: 'resolve 写修正记忆默认关闭；需要 owner 在 EmotionCore 设置页开启“允许模型写修正记忆”。' }
       }

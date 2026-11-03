@@ -17,8 +17,15 @@ from pathlib import Path
 from typing import Any
 
 DIMENSIONS = ("security", "trust", "self_efficacy", "caution", "sociability", "openness", "valence", "arousal")
-GAP_MINUTES = 45
-MAX_ITEMS = 24
+GAP_MINUTES = 20
+MAX_ITEMS = 12
+REFLECTION_MARKERS = (
+    "常驻提示词",
+    "唤醒卡",
+    "交接单",
+    "提示词有哪些",
+    "提示词里",
+)
 
 
 def _parse(ts: Any) -> datetime | None:
@@ -46,7 +53,11 @@ def build_day(conn: sqlite3.Connection, *, day: str | None = None) -> dict[str, 
            LEFT JOIN appraisals a ON a.id = (
              SELECT id FROM appraisals WHERE memory_id=m.id ORDER BY id DESC LIMIT 1
            )
-           WHERE m.source IN ('surfcore','surfcore-inbox','surface-correction')
+           WHERE m.source IN ('surfcore','surfcore-inbox','surface-correction','emotioncore-adapter')
+             AND m.appraisal_status='done'
+             AND m.status='active'
+             AND COALESCE(m.affect_weight, 1.0) > 0
+             AND COALESCE(m.consolidation_state, 'none') <> 'ignored'
            ORDER BY m.ts ASC"""
     ).fetchall()
     groups: list[list[sqlite3.Row]] = []
@@ -67,6 +78,12 @@ def build_day(conn: sqlite3.Connection, *, day: str | None = None) -> dict[str, 
     if current:
         groups.append(current)
 
+    old_status = {}
+    try:
+        for row in conn.execute("SELECT id,status,closed_at,resolution_note,closure_confidence,closure_source,reviewed_at,thread_id,continues_episode_id,last_seen_at FROM episodes WHERE day=?", (key,)):
+            old_status[row["id"]] = (row["status"] or "open", row["closed_at"], row["resolution_note"], row["closure_confidence"], row["closure_source"], row["reviewed_at"], row["thread_id"], row["continues_episode_id"], row["last_seen_at"])
+    except Exception:
+        old_status = {}
     conn.execute("DELETE FROM episodes WHERE day=?", (key,))
     created = 0
     for items in groups:
@@ -89,7 +106,7 @@ def build_day(conn: sqlite3.Connection, *, day: str | None = None) -> dict[str, 
             return (float(x["importance"] or 0.0), affect, str(x["id"]))
         quote_row = max(items, key=score)
         summary_bits = []
-        for x in (items[:1] + items[-1:]):
+        for x in (items[:1] + ([quote_row] if quote_row["id"] != items[0]["id"] else [])):
             t = _clip(x["text"], 90)
             if t and t not in summary_bits:
                 summary_bits.append(t)
@@ -124,6 +141,8 @@ def build_day(conn: sqlite3.Connection, *, day: str | None = None) -> dict[str, 
         source_kind = "correction" if any(x["source"] == "surface-correction" for x in items) else (
             "agent_dialogue" if any((x["identity_status"] or "") == "self" for x in items) else "dialog"
         )
+        if any(marker in summary or marker in str(quote_row["text"] or "") for marker in REFLECTION_MARKERS):
+            source_kind = "reflection"
         eid = "ep_" + hashlib.sha1(
             f"{key}|{first['conversation_key'] or ''}|{first['ts']}|{last['id']}".encode("utf-8")
         ).hexdigest()[:16]
@@ -132,8 +151,9 @@ def build_day(conn: sqlite3.Connection, *, day: str | None = None) -> dict[str, 
             """INSERT INTO episodes
                (id, day, start_at, end_at, conversation_key, participants_json, trigger,
                 summary, key_quote, felt, delta_json, unresolved, importance,
-                raw_ids_json, topics_json, source_kind, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                raw_ids_json, topics_json, source_kind, created_at, updated_at,
+                status, closed_at, resolution_note, closure_confidence, closure_source, reviewed_at, thread_id, continues_episode_id, last_seen_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 eid, key, first["ts"], last["ts"], first["conversation_key"] or "",
                 json.dumps(participants, ensure_ascii=False), "sleep",
@@ -141,6 +161,7 @@ def build_day(conn: sqlite3.Connection, *, day: str | None = None) -> dict[str, 
                 json.dumps(delta, ensure_ascii=False), unresolved, importance,
                 json.dumps([x["id"] for x in items], ensure_ascii=False),
                 json.dumps([], ensure_ascii=False), source_kind, now, now,
+                *old_status.get(eid, ("open", None, None, None, None, None, None, None, None)),
             ),
         )
         created += 1
@@ -171,7 +192,8 @@ def render_cards(conn: sqlite3.Connection, *, day: str | None = None,
                  limit: int = 5, max_chars: int = 1500) -> str:
     key = day or datetime.now().astimezone().date().isoformat()
     rows = conn.execute(
-        """SELECT * FROM episodes WHERE day=?
+        """SELECT * FROM episodes WHERE day=? AND importance > 0
+           AND source_kind != 'reflection'
            ORDER BY importance DESC, start_at DESC LIMIT ?""",
         (key, max(1, min(80, int(limit) * 8))),
     ).fetchall()
@@ -195,7 +217,11 @@ def render_cards(conn: sqlite3.Connection, *, day: str | None = None,
     lines = ["【事件索引（L2；原始记忆仍在本地，需要细节再查）】"]
     for r in rows:
         st = str(r["start_at"] or "")
-        clock = st[11:16] if len(st) >= 16 else st
+        try:
+            dt = datetime.fromisoformat(st.replace("Z", "+00:00")).astimezone()
+            clock = dt.strftime("%H:%M") if dt.date().isoformat() == key else dt.strftime("%m-%d %H:%M")
+        except Exception:
+            clock = st[11:16] if len(st) >= 16 else st
         who = ""
         try:
             participants = json.loads(r["participants_json"] or "[]")
@@ -235,7 +261,8 @@ def write_index(conn: sqlite3.Connection, *, days: int = 7,
         """SELECT id, day, start_at, end_at, participants_json, summary, key_quote,
                   felt, importance, unresolved, source_kind, raw_ids_json
            FROM episodes
-           WHERE day >= date('now','localtime', ?)
+           WHERE day >= date('now','localtime', ?) AND importance > 0
+             AND source_kind != 'reflection'
            ORDER BY start_at DESC LIMIT 200""",
         (f"-{max(1, int(days)) - 1} days",),
     ).fetchall()

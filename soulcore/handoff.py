@@ -49,6 +49,8 @@ def _latest_episode(conn: sqlite3.Connection) -> dict[str, Any] | None:
         """SELECT id, day, start_at, end_at, conversation_key, summary, key_quote,
                   felt, unresolved, importance
            FROM episodes
+           WHERE importance > 0
+             AND source_kind != 'reflection'
            ORDER BY COALESCE(end_at, start_at, created_at) DESC LIMIT 1"""
     ).fetchone()
     return dict(row) if row else None
@@ -57,7 +59,7 @@ def _latest_episode(conn: sqlite3.Connection) -> dict[str, Any] | None:
 def _latest_memory(conn: sqlite3.Connection) -> dict[str, Any] | None:
     row = conn.execute(
         """SELECT id, ts, scope, conversation_key, speaker, text, identity_status
-           FROM memories WHERE COALESCE(sensitive,0)=0
+           FROM memories WHERE COALESCE(sensitive,0)=0 AND status='active'
            ORDER BY COALESCE(ts, created_at) DESC LIMIT 1"""
     ).fetchone()
     return dict(row) if row else None
@@ -67,7 +69,7 @@ def _sleep(conn: sqlite3.Connection) -> dict[str, Any]:
     day = _today()
     try:
         rows = conn.execute(
-            "SELECT day_key, reason, at FROM sleep_runs WHERE day_key=? ORDER BY id ASC",
+            "SELECT day_key, reason, at FROM sleep_runs WHERE day_key=? AND reason IN ('sleep','daily') ORDER BY id ASC",
             (day,),
         ).fetchall()
     except sqlite3.OperationalError:
@@ -75,7 +77,7 @@ def _sleep(conn: sqlite3.Connection) -> dict[str, Any]:
     last = None
     try:
         last = conn.execute(
-            "SELECT day_key, reason, at FROM sleep_runs ORDER BY id DESC LIMIT 1"
+            "SELECT day_key, reason, at FROM sleep_runs WHERE reason IN ('sleep','daily') ORDER BY id DESC LIMIT 1"
         ).fetchone()
     except sqlite3.OperationalError:
         pass
@@ -140,7 +142,7 @@ def _who(conn: sqlite3.Connection) -> dict[str, Any]:
         try:
             row = conn.execute(
                 """SELECT speaker, text, conversation_key, ts FROM memories
-                   WHERE scope=? AND COALESCE(sensitive,0)=0
+                   WHERE scope=? AND COALESCE(sensitive,0)=0 AND status='active'
                    ORDER BY COALESCE(ts, created_at) DESC LIMIT 1""",
                 (scope,),
             ).fetchone()
@@ -165,6 +167,61 @@ def _body() -> dict[str, Any]:
         return {}
 
 
+def _loops_line(limit: int = 2) -> str:
+    """未完成事件（读桥接写的 loops.jsonl，只读）。"""
+    try:
+        from . import patience
+
+        loops = [x for x in patience._load_loops() if x.get("status") in ("open", "paused", "waiting")]
+    except Exception:
+        loops = []
+    if not loops:
+        return "- 没接完的：没有。"
+    import datetime as _dt
+
+    now = int(_dt.datetime.now().timestamp() * 1000)
+    due = [x for x in loops if x.get("anchor_at") and int(x["anchor_at"]) <= now]
+    rest = [x for x in loops if x not in due]
+    picked = []
+    if due:
+        picked.append(f"「{due[0].get('one_line') or ''}」（时间到了）")
+    for x in rest:
+        if len(picked) >= limit:
+            break
+        picked.append(f"「{x.get('one_line') or ''}」")
+    if not picked:
+        return "- 没接完的：没有。"
+    return f"- 没接完的：{'；'.join(picked)}。"
+
+
+def _state_words(p: dict[str, Any]) -> str:
+    """把数值翻成自然语言。表意识不需要看到 0.42 这种数。"""
+    bits = []
+    v = float(p.get("valence", 0) or 0)
+    bits.append("心情偏暖" if v > 0.15 else ("心情有点沉" if v < -0.15 else "心情平"))
+    soc = float(p.get("sociability", 0) or 0)
+    if soc > 0.55:
+        bits.append("想说话")
+    elif soc < 0.30:
+        bits.append("不太想应人")
+    aro = float(p.get("arousal", 0) or 0)
+    if aro > 0.55:
+        bits.append("精神劲儿足")
+    elif aro < 0.30:
+        bits.append("有点犯困")
+    sec = float(p.get("security", 0) or 0)
+    if sec > 0.6:
+        bits.append("心里踏实")
+    elif sec < 0.4:
+        bits.append("有点没底")
+    op = float(p.get("openness", 0) or 0)
+    if op > 0.6:
+        bits.append("想聊点新的")
+    elif op < 0.35:
+        bits.append("想守着熟悉的")
+    return "，".join(bits)
+
+
 def build(conn: sqlite3.Connection) -> dict[str, Any]:
     episode = _latest_episode(conn)
     memory = _latest_memory(conn)
@@ -184,20 +241,13 @@ def build(conn: sqlite3.Connection) -> dict[str, Any]:
         lines.append(f"  体感摘要：{str(episode.get('summary') or '')[:160]}")
     elif memory:
         lines.append(f"- 上次停在：{_local(memory.get('ts'))}，{_place(memory.get('conversation_key')) or '某处'}。")
-    if memory:
-        lines.append(
-            f"- 最近一句：{memory.get('speaker') or '某人'}：{str(memory.get('text') or '')[:100]}"
-        )
-    if pending:
-        lines.append(f"- 没接完的：有 {pending} 个待确认问题，在本地 questions 里。")
-    else:
-        lines.append("- 没接完的：当前没有待确认问题。")
+    lines.append(_loops_line())
     if sleep["count_today"]:
         lines.append(
             f"- 今天这是第 {sleep['count_today']} 次睡眠；上次睡眠结束 {_local(sleep['last_at'])}。"
         )
     else:
-        lines.append("- 今天还没有睡眠记录。")
+        lines.append("- 今天还没有更早的睡眠记录。")
     if who.get("private"):
         p = who["private"]
         lines.append(f"- 最近私聊：{p.get('speaker') or '对方'}：{str(p.get('text') or '')[:80]}")
@@ -207,9 +257,13 @@ def build(conn: sqlite3.Connection) -> dict[str, Any]:
     if body.get("balance") is not None:
         lines.append(f"- 身体：API 余额约 {body['balance']}；这些只是临时状态。")
 
-    if top_delta:
-        bits = "，".join(f"{k} {v:+.2f}" for k, v in top_delta)
-        lines.append(f"- P 今天有明显偏移：{bits}。这是慢变量，不是命令。")
+    p_now = {}
+    try:
+        p_now = personality.compute_p(conn).get("p") or {}
+    except Exception:
+        p_now = {}
+    if p_now:
+        lines.append(f"- 现在的状态：{_state_words(p_now)}。这是慢变量，不是命令。")
     if desires:
         d = desires[0]
         tier = "轻量念头" if d.get("tier") == "micro" else "欲望"
@@ -224,8 +278,11 @@ def build(conn: sqlite3.Connection) -> dict[str, Any]:
         "先看有没有新消息；有就接，没有就做自己的事。",
         "",
         "【可以核对】",
-        "需要旧事时用 soulcore_memory 查 search/range/person/p；",
+        "需要旧事时用当前通道可用的本地记忆查询；旧的 soulcore_memory 入口已下线。",
         "这些是交接线索，不是要求你相信的宣告。",
+        "",
+        "【不用担心睡醒后记忆模糊】",
+        "人类也这样。",
     ])
     text = "\n".join(lines).strip()
     if len(text) > MAX_CHARS:

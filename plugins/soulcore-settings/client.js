@@ -85,6 +85,11 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState('')
       const [notice, setNotice] = React.useState({ kind: '', text: '' })
       const [query, setQuery] = React.useState('AI')
+      const [layerFilter, setLayerFilter] = React.useState('all')
+      const [layerQuery, setLayerQuery] = React.useState('跑团')
+      const [episodeId, setEpisodeId] = React.useState('')
+      const [memoryId, setMemoryId] = React.useState('')
+      const [personQq, setPersonQq] = React.useState('')
 
       const refresh = React.useCallback(async () => {
         setBusy('refresh')
@@ -141,6 +146,14 @@ window.__ModuleLoader__.load({
       const l2Ok = status?.episodeIndex?.exists === true
       const memCount = Number(memory.memories || 0)
       const episodeCount = Number(memory.episodes || 0)
+      const layerCalls = Array.isArray(status?.layerCalls) ? status.layerCalls : []
+      const legacyCalls = layerCalls.length
+        ? []
+        : (Array.isArray(status?.calls) ? status.calls : []).map((c) => ({ ...c, layer: '旧工具', op: c.mode || 'memory_tool' }))
+      const allLayerCalls = layerCalls.length ? layerCalls : legacyCalls
+      const visibleCalls = layerFilter === 'all'
+        ? allLayerCalls
+        : allLayerCalls.filter((c) => String(c.layer || '') === layerFilter)
 
       return h('div', { style: styles.page },
         h('div', { style: styles.hero },
@@ -151,6 +164,104 @@ window.__ModuleLoader__.load({
           ),
         ),
         h('div', { style: styles.subtitle }, `EmotionCore for DSH / SurfCore · v${status?.version || '0.3.1'}：本地记忆、评价、L2 事件索引与系统状态。原文由 SurfCore 保存，EmotionCore 只做增强；内部兼容 ID 仍为 soulcore。`),
+
+        h('div', { style: styles.section, key: 'startup-chain' },
+          h('div', { style: styles.sectionTitle }, '启动链 / 运行与睡眠'),
+          h('div', { style: styles.sectionHint }, '按从协议端到本地记忆的顺序排列。绿色=在线；停止会真的结束进程。QQ 侧的 OneBot 连接由「QQ 控制台」管理。'),
+          h(Row, { first: true, name: 'SnowLuma 协议端', desc: `HTTP ${status?.runtime?.protocol?.httpPort || 3000} · WS ${status?.runtime?.protocol?.wsPort || 3001} · ${status?.runtime?.protocol?.root || '未配置目录'}` },
+            h('span', { style: { ...styles.badge, color: status?.runtime?.protocol?.running ? C.ok : C.muted } },
+              h('span', { style: styles.dot(status?.runtime?.protocol?.running ? C.ok : C.err) }),
+              status?.runtime?.protocol?.running
+                ? (status?.runtime?.protocol?.online ? '运行中 · QQ 在线' : '运行中 · QQ 未登录')
+                : '未运行'),
+            h('button', {
+              style: styles.button2, disabled: !!busy,
+              onClick: () => {
+                const on = !status?.runtime?.protocol?.running
+                if (!on && !window.confirm('停止 SnowLuma？QQ 会立刻收发不到消息。')) return
+                void doAction('snowluma', { on })
+              },
+            }, busy === 'snowluma' ? '处理中…' : (status?.runtime?.protocol?.running ? '停止' : '启动'))),
+
+          h(Row, { name: 'DSH OneBot 连接', desc: '入站消息从 SnowLuma WS 进入 DSH；断开时先看 QQ 控制台的 OneBot 页。' },
+            h('span', { style: { ...styles.badge, color: status?.runtime?.onebot?.linked ? C.ok : C.muted } },
+              h('span', { style: styles.dot(status?.runtime?.onebot?.linked ? C.ok : C.err) }),
+              status?.runtime?.onebot?.linked ? '已连接' : '未连接'),
+            h('span', { style: { ...styles.badge, color: status?.runtime?.onebot?.qqLoggedIn === false ? C.err : C.muted } },
+              status?.runtime?.onebot?.qqLoggedIn === true ? 'QQ 已登录' : status?.runtime?.onebot?.qqLoggedIn === false ? 'QQ 未登录' : 'QQ 未知')),
+
+          h(Row, { name: 'EmotionCore 服务', desc: `自动启动 · 127.0.0.1:${status?.runtime?.emotioncore?.port || 8765} · worker ${status?.runtime?.emotioncore?.worker?.pid ? `pid ${status.runtime.emotioncore.worker.pid}` : '未运行'}` },
+            h('span', { style: { ...styles.badge, color: status?.runtime?.emotioncore?.service?.healthy ? C.ok : C.err } },
+              h('span', { style: styles.dot(status?.runtime?.emotioncore?.service?.healthy ? C.ok : C.err) }),
+              status?.runtime?.emotioncore?.service?.healthy ? 'healthy' : 'down'),
+            h('div', { style: { display: 'flex', gap: 6 } },
+              h('button', {
+                style: styles.button2, disabled: !!busy,
+                onClick: () => {
+                  const healthy = status?.runtime?.emotioncore?.service?.healthy
+                  if (healthy && !window.confirm('停止 EmotionCore 服务？聊天上下文会暂时不可用。')) return
+                  void doAction('runtime', { target: 'service', op: healthy ? 'stop' : 'start' })
+                },
+              }, busy === 'runtime' ? '处理中…' : (status?.runtime?.emotioncore?.service?.healthy ? '停止' : '启动')),
+              h('button', {
+                style: styles.button2, disabled: !!busy,
+                onClick: () => { if (!window.confirm('重启 EmotionCore 服务？')) return; void doAction('runtime', { target: 'service', op: 'restart' }) },
+              }, '重启'))),
+
+          h(Row, { name: 'EmotionCore 维护 worker', desc: '自动启动；负责每日睡眠整理、评价、事件与线程收尾，按下面的时间跑。' },
+            h('span', { style: { ...styles.badge, color: status?.runtime?.emotioncore?.worker?.alive ? C.ok : C.err } },
+              h('span', { style: styles.dot(status?.runtime?.emotioncore?.worker?.alive ? C.ok : C.err) }),
+              status?.runtime?.emotioncore?.worker?.alive ? `运行中 · pid ${status.runtime.emotioncore.worker.pid}` : '未运行'),
+            h('button', {
+              style: styles.button2, disabled: !!busy,
+              onClick: () => {
+                const alive = status?.runtime?.emotioncore?.worker?.alive
+                if (alive && !window.confirm('停止维护 worker？自动睡眠整理会暂停。')) return
+                void doAction('runtime', { target: 'worker', op: alive ? 'stop' : 'start' })
+              },
+            }, busy === 'runtime' ? '处理中…' : (status?.runtime?.emotioncore?.worker?.alive ? '停止' : '启动'))),
+
+          h(Row, { name: 'memory-lab', desc: '只读实验 sidecar；不影响 QQ 主链，也不写 soulcore.db。' },
+            h('span', { style: { ...styles.badge, color: status?.runtime?.memoryLab?.healthy ? C.ok : C.muted } },
+              h('span', { style: styles.dot(status?.runtime?.memoryLab?.healthy ? C.ok : C.err) }),
+              status?.runtime?.memoryLab?.healthy ? '在线' : '离线')),
+
+          h(Row, { name: 'DSH 启动时自动拉起 SnowLuma', desc: '只在本机 3000 未响应时启动；SnowLuma 自身会脱离 DSH 进程，DSH 退出不会带走它。' },
+            h(Toggle, {
+              checked: settings.snowlumaAutoStart !== false, disabled: !!busy,
+              onChange: (v) => { set('snowlumaAutoStart', v); void doAction('save', { settings: { ...settings, snowlumaAutoStart: v } }) },
+            })),
+
+          h('div', { style: { borderTop: `1px solid ${C.border}`, marginTop: 10, paddingTop: 10 } },
+            h('div', { style: { ...styles.sectionTitle, marginBottom: 2 } }, '睡眠整理'),
+            h('div', { style: { ...styles.sectionHint, marginBottom: 8 } }, '自动睡眠由 worker 做纯本地 daily_cycle，不告别、不轮换。手动「日结 daily」和「完整睡眠 sleep」都会走现有流程，可能触发告别/轮换，执行前会确认。'),
+            h(Row, { first: true, name: '自动睡眠整理', desc: `每天 ${String(settings.sleepHour ?? 4).padStart(2, '0')}:00 由维护 worker 执行纯本地整理；关闭后仍可手动整理。` },
+              h(Toggle, {
+                checked: settings.sleepAuto !== false, disabled: !!busy,
+                onChange: (v) => { set('sleepAuto', v); void doAction('sleep-schedule', { auto: v, hour: Number(settings.sleepHour ?? 4) }) },
+              })),
+            h(Row, { name: '执行时间', desc: '0–23 点，本地时区。' },
+              h('input', {
+                type: 'number', min: 0, max: 23, value: settings.sleepHour ?? 4,
+                style: { ...styles.input, width: 72 }, disabled: !!busy,
+                onChange: (e) => set('sleepHour', Number(e.target.value)),
+              }),
+              h('button', {
+                style: styles.button2, disabled: !!busy,
+                onClick: () => void doAction('sleep-schedule', { auto: settings.sleepAuto !== false, hour: Number(settings.sleepHour ?? 4) }),
+              }, '保存时间')),
+            h(Row, { name: '最近一次完整睡眠', desc: status?.lastSleep ? `${status.lastSleep.day || ''} · ${status.lastSleep.generatedAt || ''}` : '还没有睡眠记录' },
+              h('span', { style: styles.badge }, `今天 ${memory.sleep_runs_today ?? 0} 次`)),
+            h('div', { style: styles.buttonRow },
+              h('button', {
+                style: styles.button2, disabled: !!busy,
+                onClick: () => { if (!window.confirm('执行日结 daily？会走现有告别/轮换逻辑。')) return; void doAction('sleep', { mode: 'daily' }) },
+              }, busy === 'sleep' ? '整理中…' : '日结 daily'),
+              h('button', {
+                style: styles.button2, disabled: !!busy,
+                onClick: () => { if (!window.confirm('执行完整睡眠整理？会走告别与会话轮换。')) return; void doAction('sleep', { mode: 'full' }) },
+              }, busy === 'sleep' ? '整理中…' : '完整睡眠整理'))),
+        ),
 
         h('div', { style: styles.grid },
           h('div', { style: styles.card }, h('div', { style: styles.label }, '长期记忆'), h('div', { style: { ...styles.value, color: memCount ? C.ok : C.warn } }, memCount ? `${memCount} 条` : '—')),
@@ -214,8 +325,10 @@ window.__ModuleLoader__.load({
           h('div', { style: styles.sectionHint }, '改完保存，Soul-Bridge 下一次调用即读取新值；记忆查询默认跨私聊/群聊。'),
           h(Row, { first: true, name: '记忆查询工具', desc: '允许 agent 调用 soulcore_memory 查本地长期记忆（默认全局库）。' },
             h(Toggle, { checked: settings.memoryTool !== false, onChange: (v) => set('memoryTool', v) })),
-          h(Row, { name: '允许模型写修正记忆', desc: '打开后 soulcore_memory 的 resolve 才能写本地 correction；默认关闭，防止群聊注入改记忆。' },
+          h(Row, { name: '允许模型写修正记忆', desc: '旧 resolve 入口；新 EmotionCore 默认不向 QQ 暴露写修正。' },
             h(Toggle, { checked: settings.memoryResolve === true, onChange: (v) => set('memoryResolve', v) })),
+          h(Row, { name: '调试：overview 总览', desc: '仅在重载 soul-bridge 后把 overview 暴露给模型；默认关闭。普通聊天不需要它。' },
+            h(Toggle, { checked: settings.memoryOverview === true, onChange: (v) => set('memoryOverview', v) })),
           h(Row, { name: '影子检索日志', desc: '监听模型请求，把本地召回与 P 写入 shadow 日志；不改写请求。' },
             h(Toggle, { checked: settings.shadowEnabled !== false, onChange: (v) => set('shadowEnabled', v) })),
           h(Row, { name: '影子检索写回标记', desc: '命中时更新 familiarity / trigger；默认关闭。' },
@@ -274,22 +387,49 @@ window.__ModuleLoader__.load({
         ),
 
         h('div', { style: styles.section },
-          h('div', { style: styles.sectionTitle }, '最近记忆查询调用'),
-          h('div', { style: styles.sectionHint }, '来自 EmotionCore 的 memory-tool-calls.jsonl；能看到 backend 和结果数。'),
-          (status?.calls || []).length === 0
-            ? h('div', { style: styles.rowDesc }, '还没有调用记录。')
+          h('div', { style: styles.sectionTitle }, '记忆调用记录（分层）'),
+          h('div', { style: styles.sectionHint }, 'L5=唤醒组装（每轮自动 /context）；L3=事件索引（recall query）；L2=单条原文/事件详情；L4=人物关系。'
+            + '旧记录只来自 soulcore_memory，所以以前只看到 recall 不代表没有自动记忆注入。'),
+          h('div', { style: styles.buttonRow },
+            ...[['all', '全部'], ['L5', 'L5 唤醒'], ['L4', 'L4 人物'], ['L3', 'L3 索引'], ['L2', 'L2 原文']].map(([value, label]) =>
+              h('button', {
+                key: value,
+                style: { ...styles.button2, borderColor: layerFilter === value ? C.accent : C.border, color: layerFilter === value ? C.accent : C.text },
+                onClick: () => setLayerFilter(value),
+              }, label)),
+            h('span', { style: styles.rowDesc }, `共 ${allLayerCalls.length} 条`),
+          ),
+          h('div', { style: { ...styles.buttonRow, marginTop: 10 } },
+            h('input', { style: { ...styles.input, width: 220 }, value: layerQuery, onChange: (e) => setLayerQuery(e.target.value), placeholder: 'L3 查询关键词' }),
+            h('button', { style: styles.button2, disabled: !!busy, onClick: () => void doAction('layer-call', { layer: 'L3', query: layerQuery }) }, '调 L3 索引'),
+            h('button', { style: styles.button2, disabled: !!busy, onClick: () => void doAction('layer-call', { layer: 'L5', text: layerQuery }) }, '调 L5 唤醒'),
+            h('button', { style: styles.button2, disabled: !!busy, onClick: () => void doAction('layer-call', { layer: 'L4', qq: personQq }) }, '调 L4 人物'),
+            h('input', { style: { ...styles.input, width: 140 }, value: personQq, onChange: (e) => setPersonQq(e.target.value), placeholder: '人物 QQ' }),
+          ),
+          h('div', { style: { ...styles.buttonRow, marginTop: 8 } },
+            h('input', { style: { ...styles.input, width: 220 }, value: episodeId, onChange: (e) => setEpisodeId(e.target.value), placeholder: 'episode_id（L3 详情）' }),
+            h('button', { style: styles.button2, disabled: !!busy, onClick: () => void doAction('layer-call', { layer: 'L2', episode_id: episodeId }) }, '调 L2 事件详情'),
+            h('input', { style: { ...styles.input, width: 220 }, value: memoryId, onChange: (e) => setMemoryId(e.target.value), placeholder: 'memory_id（L2 原文）' }),
+            h('button', { style: styles.button2, disabled: !!busy, onClick: () => void doAction('layer-call', { layer: 'L2', memory_id: memoryId }) }, '调 L2 原文'),
+          ),
+          visibleCalls.length === 0
+            ? h('div', { style: styles.rowDesc }, '还没有分层调用记录；等下一轮 /context 或点上面的按钮。')
             : h('table', { style: styles.table },
               h('thead', null, h('tr', null,
                 h('th', { style: styles.th }, '时间'),
-                h('th', { style: styles.th }, 'backend'),
-                h('th', { style: styles.th }, '模式'),
+                h('th', { style: styles.th }, '层级'),
+                h('th', { style: styles.th }, '入口'),
+                h('th', { style: styles.th }, '范围 / id'),
                 h('th', { style: styles.th }, '结果'),
+                h('th', { style: styles.th }, '字符'),
               )),
-              h('tbody', null, (status.calls || []).map((c, i) => h('tr', { key: i },
+              h('tbody', null, visibleCalls.map((c, i) => h('tr', { key: i },
                 h('td', { style: styles.td }, String(c.at || '').replace('T', ' ').slice(0, 19)),
-                h('td', { style: styles.td }, c.backend || '—'),
-                h('td', { style: styles.td }, c.mode || '—'),
-                h('td', { style: styles.td }, c.result_count == null ? (c.ok ? 'ok' : 'fail') : String(c.result_count)),
+                h('td', { style: styles.td }, h('span', { style: { color: C.accent, fontWeight: 600 } }, c.layer || '—')),
+                h('td', { style: styles.td }, `${c.op || '—'}${c.source ? ` / ${c.source}` : ''}`),
+                h('td', { style: styles.td }, [c.scope, c.groupId, c.episode_id, c.memory_id, c.query].filter(Boolean).join(' · ') || '—'),
+                h('td', { style: styles.td }, c.result_count == null ? (c.ok === false ? 'fail' : 'ok') : String(c.result_count)),
+                h('td', { style: styles.td }, c.chars == null ? '—' : String(c.chars)),
               ))),
             ),
         ),

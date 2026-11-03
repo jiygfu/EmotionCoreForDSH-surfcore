@@ -26,6 +26,7 @@ const STATE_DIR = process.env.SURFCORE_STATE_DIR || path.join(process.env.USERPR
 const SETTINGS_PATH = path.join(DATA, 'soul-bridge-settings.json')
 const VERSION_PATH = path.join(ROOT, 'VERSION')
 const CALL_LOG = path.join(DATA, 'memory-tool-calls.jsonl')
+const LAYER_CALL_LOG = path.join(DATA, 'memory-layer-calls.jsonl')
 const CAPABILITIES_PATH = path.join(DATA, 'capabilities.json')
 const BODY_PATH = path.join(DATA, 'body-state.json')
 const BALANCE_PATH = path.join(DATA, 'balance.json')
@@ -49,6 +50,7 @@ const DEFAULTS = {
   shadowEnabled: true,
   memoryTool: true,
   memoryResolve: false,
+  memoryOverview: false,
   fishRunner: false,
   mark: false,
   timeoutMs: 4000,
@@ -56,6 +58,10 @@ const DEFAULTS = {
   pythonPath: process.env.SOULCORE_PYTHON || 'python',
   nodePath: 'node',
   dbPath: path.join(DATA, 'soulcore.db'),
+  snowlumaRoot: process.env.SNOWLUMA_ROOT || 'D:\\SnowLuma',
+  snowlumaAutoStart: true,
+  sleepAuto: true,
+  sleepHour: 4,
 }
 
 async function sidecarPath() {
@@ -106,6 +112,7 @@ function cleanSettings(input) {
     const value = src[key]
     if (value === undefined) continue
     if (typeof DEFAULTS[key] === 'boolean') out[key] = value === true
+    else if (key === 'sleepHour') out[key] = Math.max(0, Math.min(23, Number(value) || 0))
     else if (typeof DEFAULTS[key] === 'number') out[key] = Math.max(1, Math.min(120000, Number(value) || DEFAULTS[key]))
     else out[key] = String(value).slice(0, 500)
   }
@@ -230,6 +237,212 @@ async function stopFish() {
   return { ok: true }
 }
 
+const WORKER_PID = path.join(DATA, 'emotioncore-worker.pid')
+const SCHEDULE_PATH = path.join(DATA, 'emotioncore-schedule.json')
+
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }
+
+function runtimeService(ctx) {
+  try { return ctx.get('emotioncoreRuntime') } catch { return null }
+}
+
+async function httpJson(url, options = {}, timeoutMs = 1200) {
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, { ...options, signal: ac.signal })
+    const body = await res.json().catch(() => ({}))
+    return { ok: res.ok, status: res.status, body }
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) }
+  } finally { clearTimeout(timer) }
+}
+
+async function portPid(port) {
+  if (process.platform !== 'win32') return 0
+  return await new Promise((resolve) => {
+    execFile('netstat', ['-ano'], { windowsHide: true }, (error, stdout) => {
+      if (error) { resolve(0); return }
+      const line = String(stdout || '').split(/\r?\n/).find((l) => l.includes(`:${port}`) && /LISTENING/i.test(l))
+      const fields = String(line || '').trim().split(/\s+/)
+      resolve(Number(fields[fields.length - 1]) || 0)
+    })
+  })
+}
+
+async function killPid(pid) {
+  if (!pidAlive(pid)) return
+  await new Promise((resolve) => {
+    execFile('taskkill', ['/pid', String(pid), '/f', '/t'], { windowsHide: true }, () => resolve())
+  })
+}
+
+async function readSchedule(settings) {
+  const fallback = { auto: settings.sleepAuto !== false, hour: Number(settings.sleepHour ?? 4) }
+  try {
+    const raw = JSON.parse(await readFile(SCHEDULE_PATH, 'utf8'))
+    return {
+      auto: raw?.auto !== false,
+      hour: Math.max(0, Math.min(23, Number(raw?.hour ?? fallback.hour) || 0)),
+      path: SCHEDULE_PATH,
+    }
+  } catch {
+    return { ...fallback, path: SCHEDULE_PATH }
+  }
+}
+
+async function writeSchedule(input = {}) {
+  const auto = input.auto !== false
+  const hour = Math.max(0, Math.min(23, Number(input.hour ?? 4) || 0))
+  await writeJson(SCHEDULE_PATH, { auto, hour })
+  return { auto, hour, path: SCHEDULE_PATH }
+}
+
+async function latestSleep() {
+  const dir = path.join(ROOT, 'sleep')
+  try {
+    const names = (await readdir(dir)).filter((n) => n.endsWith('.json')).sort().reverse()
+    for (const name of names) {
+      const file = path.join(dir, name)
+      const info = await stat(file)
+      const raw = await readJson(file, {})
+      return {
+        file,
+        day: raw?.day_key || name.replace(/\.json$/, ''),
+        generatedAt: raw?.generated_at || info.mtime.toISOString(),
+        mtime: info.mtime.toISOString(),
+        dreamId: raw?.dream_id || '',
+        appraised: raw?.appraised ?? null,
+      }
+    }
+  } catch {}
+  return null
+}
+
+async function snowlumaInfo(settings) {
+  const root = String(settings.snowlumaRoot || '').trim()
+  const out = {
+    installed: Boolean(root && existsSync(path.join(root, 'index.mjs'))),
+    root,
+    running: false,
+    online: null,
+    good: null,
+    httpPort: 3000,
+    wsPort: 3001,
+    webuiPort: 5099,
+    uin: '',
+    error: '',
+  }
+  if (!out.installed) { out.error = 'SnowLuma 目录不存在或缺少 index.mjs'; return out }
+  let files = []
+  try {
+    files = (await readdir(path.join(root, 'config'))).filter((n) => /^onebot_\d+\.json$/i.test(n))
+  } catch {}
+  let token = ''
+  for (const name of files) {
+    try {
+      const raw = JSON.parse(await readFile(path.join(root, 'config', name), 'utf8'))
+      const http = raw?.networks?.httpServers?.[0]
+      const ws = raw?.networks?.wsServers?.[0]
+      if (http) { out.httpPort = Number(http.port) || out.httpPort; token = String(http.accessToken || '') }
+      if (ws) out.wsPort = Number(ws.port) || out.wsPort
+      out.uin = name.replace(/^onebot_|\.json$/gi, '')
+      if (http) break
+    } catch {}
+  }
+  if (!token) {
+    out.error = '未找到 OneBot HTTP token'
+    out.running = Boolean((await portPid(out.httpPort)) || (await portPid(out.wsPort)))
+    return out
+  }
+  const r = await httpJson(`http://127.0.0.1:${out.httpPort}/get_status`, {
+    headers: { authorization: `Bearer ${token}` },
+  })
+  if (r.ok) {
+    out.running = true
+    out.online = r.body?.data?.online === true
+    out.good = r.body?.data?.good === true
+  } else {
+    out.error = r.error || `HTTP ${r.status || '?'}`
+    // HTTP 鉴权失败/超时也可能是进程还在，只是 token 不对；端口在就允许“停止”，避免重复启动。
+    out.running = Boolean((await portPid(out.httpPort)) || (await portPid(out.wsPort)))
+  }
+  return out
+}
+
+async function startSnowluma(settings) {
+  const info = await snowlumaInfo(settings)
+  if (info.running) return { ok: true, already: true, protocol: info }
+  if (!info.installed) return { ok: false, error: info.error, protocol: info }
+  const node = existsSync(path.join(info.root, 'node.exe')) ? path.join(info.root, 'node.exe') : resolveNode(settings)
+  try {
+    const child = spawn(node, [path.join(info.root, 'index.mjs')], {
+      cwd: info.root,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env: process.env,
+    })
+    child.unref()
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error), protocol: info }
+  }
+  for (let i = 0; i < 15; i += 1) {
+    await sleep(1000)
+    const next = await snowlumaInfo(settings)
+    if (next.running) return { ok: true, protocol: next }
+  }
+  return { ok: false, error: 'SnowLuma 启动后 15 秒内未响应', protocol: await snowlumaInfo(settings) }
+}
+
+async function stopSnowluma(settings) {
+  const info = await snowlumaInfo(settings)
+  const pid = (await portPid(info.httpPort)) || (await portPid(info.wsPort))
+  if (!pid) return { ok: true, already: true, protocol: info }
+  await killPid(pid)
+  await sleep(1000)
+  return { ok: true, protocol: await snowlumaInfo(settings) }
+}
+
+async function runtimeOverview(ctx, settings) {
+  const svc = runtimeService(ctx)
+  let emotioncore = null
+  if (svc?.status) {
+    try { emotioncore = await svc.status() } catch (error) { emotioncore = { ok: false, error: String(error?.message ?? error) } }
+  }
+  if (!emotioncore) {
+    const health = await httpJson('http://127.0.0.1:8765/health')
+    let workerPid = 0
+    try { workerPid = Number(String(await readFile(WORKER_PID, 'utf8')).trim()) || 0 } catch {}
+    emotioncore = {
+      ok: true,
+      source: 'fallback',
+      service: { healthy: health.ok },
+      worker: { alive: pidAlive(workerPid), pid: pidAlive(workerPid) ? workerPid : 0 },
+    }
+  }
+  let onebot = { linked: null, qqLoggedIn: null, stale: null, selfId: null, nickname: '' }
+  try {
+    const qq = ctx.get('qqBot')?.status?.()
+    if (qq?.onebot) {
+      onebot = {
+        linked: qq.onebot.linked === true,
+        qqLoggedIn: qq.onebot.qqLoggedIn,
+        stale: qq.onebot.stale === true,
+        selfId: qq.onebot.selfId || null,
+        nickname: qq.onebot.selfNickname || '',
+      }
+    }
+  } catch {}
+  const lab = await httpJson('http://127.0.0.1:8766/health')
+  return {
+    emotioncore,
+    onebot,
+    memoryLab: { healthy: lab.ok, port: 8766 },
+    protocol: await snowlumaInfo(settings),
+  }
+}
+
 function runPython(settings, args, timeoutMs = 120000) {
   return new Promise((resolve) => {
     execFile(
@@ -256,6 +469,18 @@ function runPython(settings, args, timeoutMs = 120000) {
 async function tailCalls(limit = 8) {
   try {
     const text = await readFile(CALL_LOG, 'utf8')
+    const lines = text.split('\n').filter(Boolean)
+    return lines.slice(-limit).map((line) => {
+      try { return JSON.parse(line) } catch { return { raw: line } }
+    }).reverse()
+  } catch {
+    return []
+  }
+}
+
+async function tailLayerCalls(limit = 40) {
+  try {
+    const text = await readFile(LAYER_CALL_LOG, 'utf8')
     const lines = text.split('\n').filter(Boolean)
     return lines.slice(-limit).map((line) => {
       try { return JSON.parse(line) } catch { return { raw: line } }
@@ -319,6 +544,9 @@ async function state(ctx) {
     balance: await readJson(BALANCE_PATH, null),
     budget: await readJson(BUDGET_PATH, null),
     sleep: await readJson(SLEEP_PATH, null),
+    sleepSchedule: await readSchedule(settings),
+    lastSleep: await latestSleep(),
+    runtime: await runtimeOverview(ctx, settings),
     handoff: await fileInfo(HANDOFF_PATH),
     episodeIndex: await fileInfo(EPISODE_INDEX),
     episodeCards: await fileInfo(EPISODE_CARDS),
@@ -326,6 +554,8 @@ async function state(ctx) {
     sidecar: await sidecarInfo(),
     calls: await tailCalls(8),
     recentCallCount: (await tailCalls(500)).length,
+    layerCalls: await tailLayerCalls(60),
+    layerCallCount: (await tailLayerCalls(5000)).length,
   }
 }
 
@@ -371,6 +601,55 @@ async function action(ctx, body) {
     const result = await runPython(settings, ['repair-identities'])
     return { ...result, message: result.ok ? '身份回填完成' : '身份回填失败' }
   }
+  if (kind === 'runtime') {
+    const svc = runtimeService(ctx)
+    if (!svc?.status) return { ok: false, error: 'emotioncore-runtime 未加载，无法控制 service/worker' }
+    const target = ['service', 'worker', 'all'].includes(String(body.target)) ? String(body.target) : 'all'
+    const op = ['start', 'stop', 'restart'].includes(String(body.op)) ? String(body.op) : 'status'
+    if (op === 'stop') {
+      if (target === 'all') await svc.stopAll()
+      else if (target === 'service') await svc.stopService()
+      else await svc.stopWorker()
+    } else if (op === 'start') {
+      if (target === 'all') { await svc.startService(); await svc.startWorker() }
+      else if (target === 'service') await svc.startService()
+      else await svc.startWorker()
+    } else if (op === 'restart') {
+      await svc.restart(target)
+    }
+    if (op !== 'status') await sleep(1200)
+    return {
+      ok: true,
+      message: op === 'status' ? '已刷新' : `${target} ${op} 已执行`,
+      runtime: await runtimeOverview(ctx, settings),
+    }
+  }
+  if (kind === 'snowluma') {
+    const on = body?.on === true
+    const result = on ? await startSnowluma(settings) : await stopSnowluma(settings)
+    return {
+      ...result,
+      message: on
+        ? (result.ok ? (result.already ? 'SnowLuma 已在运行' : 'SnowLuma 已启动') : `SnowLuma 启动失败：${result.error || '未知错误'}`)
+        : (result.ok ? (result.already ? 'SnowLuma 已经停止' : 'SnowLuma 已停止') : `SnowLuma 停止失败：${result.error || '未知错误'}`),
+    }
+  }
+  if (kind === 'sleep') {
+    const full = body?.mode === 'full'
+    const cmd = full ? 'sleep' : 'daily'
+    const result = await runPython(settings, [cmd], 300000)
+    return {
+      ...result,
+      message: result.ok
+        ? (full ? '完整睡眠整理完成（含告别/会话轮换）' : '日结 daily 完成')
+        : (full ? '完整睡眠整理失败' : '日结 daily 失败'),
+    }
+  }
+  if (kind === 'sleep-schedule') {
+    const schedule = await writeSchedule({ auto: body?.auto !== false, hour: body?.hour })
+    const next = await saveSettings({ ...settings, sleepAuto: schedule.auto, sleepHour: schedule.hour })
+    return { ok: true, settings: next, sleepSchedule: schedule, message: schedule.auto ? `自动睡眠整理已开启（${String(schedule.hour).padStart(2, '0')}:00）` : '自动睡眠整理已关闭' }
+  }
   if (kind === 'fish') {
     const on = body?.on === true
     const next = await saveSettings({ ...settings, fishRunner: on })
@@ -385,6 +664,71 @@ async function action(ctx, body) {
       settings: next,
       fish,
       message: on ? (fish.running ? `鱼鱼找鸡已启动（pid ${fish.pid}）` : '已启动，但还没看到进程，稍后刷新看日志') : '鱼鱼找鸡已停止',
+    }
+  }
+  if (kind === 'layer-call') {
+    const layer = String(body?.layer || '').toUpperCase()
+    const base = String(process.env.EMOTIONCORE_URL || 'http://127.0.0.1:8765').replace(/\/+$/, '')
+    const timeout = Math.max(500, Math.min(12000, Number(settings.timeoutMs) || 4000))
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(), timeout)
+    try {
+      let url = ''
+      let method = 'POST'
+      let payload = null
+      if (layer === 'L3') {
+        url = `${base}/recall`
+        payload = {
+          query: String(body.query || '').slice(0, 200),
+          limit: Math.max(1, Math.min(3, Number(body.limit) || 2)),
+          source: 'settings',
+          scope: String(body.scope || ''),
+          groupId: String(body.groupId || ''),
+        }
+      } else if (layer === 'L2') {
+        const episodeId = String(body.episode_id || '').trim()
+        const memoryId = String(body.memory_id || '').trim()
+        if (!episodeId && !memoryId) throw new Error('L2 需要 episode_id 或 memory_id')
+        url = `${base}/recall`
+        payload = { episode_id: episodeId, memory_id: memoryId, source: 'settings' }
+      } else if (layer === 'L4') {
+        const qq = String(body.qq || body.person || '').trim()
+        if (!/^\d+$/.test(qq)) throw new Error('L4 需要 QQ 号')
+        url = `${base}/person?qq=${encodeURIComponent(qq)}`
+        method = 'GET'
+      } else if (layer === 'L5') {
+        const text = String(body.text || body.query || '记忆分层测试').slice(0, 300)
+        url = `${base}/context`
+        payload = {
+          version: 1,
+          preview: true,
+          chatKey: String(body.chatKey || 'private:10000'),
+          isGroup: false,
+          sender: { qq: String(body.qq || '10000'), name: 'EmotionCore 设置页' },
+          text,
+        }
+      } else {
+        throw new Error(`未知层级：${layer || '（空）'}`)
+      }
+      const res = await fetch(url, {
+        method,
+        headers: method === 'POST' ? { 'content-type': 'application/json' } : undefined,
+        body: method === 'POST' ? JSON.stringify(payload) : undefined,
+        signal: ac.signal,
+      })
+      const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }))
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`)
+      const output = JSON.stringify(data, null, 2).slice(0, 12000)
+      return {
+        ok: data?.ok !== false,
+        layer,
+        output,
+        message: `${layer} 调用完成${data?.level ? ` · ${data.level}` : ''}`,
+      }
+    } catch (error) {
+      return { ok: false, error: String(error?.message || error), message: `${layer || '记忆'} 调用失败` }
+    } finally {
+      clearTimeout(timer)
     }
   }
   if (kind === 'refresh') {
@@ -427,6 +771,17 @@ export function apply(ctx) {
 
   // 随 SoulCore 一起启停：激活时按设置自动拉起鱼鱼找鸡运行器；插件卸载 / DSH 退出时停掉。
   ctx.effect(() => () => { void stopFish() })
+  void (async () => {
+    try {
+      const settings = await loadSettings()
+      if (settings.snowlumaAutoStart !== true) return
+      const info = await snowlumaInfo(settings)
+      if (!info.running) await startSnowluma(settings)
+    } catch {
+      // 自动拉起失败不影响设置页本身
+    }
+  })()
+
   void (async () => {
     try {
       const settings = await loadSettings()

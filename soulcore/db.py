@@ -43,6 +43,38 @@ def text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
 
 
+# These are not "bad memories": raw rows stay. They are excluded from the
+# default event/search surface so self-analysis or an old prompt cannot be
+# mistaken for an event.
+_LEGACY_PROMPT_MARKERS = (
+    "你不是独立于本机的另一个人",
+    "也不证明你拥有独立记忆或独立存在",
+    "表层 API 是这套系统的表达器官",
+)
+_REFLECTION_MARKERS = (
+    "常驻提示词",
+    "唤醒卡",
+    "记忆卡",
+    "交接单",
+    "翻不出来",
+    "没命中",
+    "记忆里搜了",
+    "上下文预算",
+    "不证明你拥有",
+)
+
+
+def memory_status(text: str, identity_status: str | None) -> str:
+    """Classify a memory for retrieval/event hygiene; never delete raw text."""
+    body = str(text or "")
+    if any(marker in body for marker in _LEGACY_PROMPT_MARKERS):
+        return "legacy_prompt"
+    if (identity_status or "") == "self" and any(marker in body for marker in _REFLECTION_MARKERS):
+        return "reflection"
+    return "active"
+
+
+
 def connect(path: str | Path | None = None) -> sqlite3.Connection:
     p = Path(path) if path else DEFAULT_DB
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -486,6 +518,15 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str)
 
 
 def init_db(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS thread_merge_reviews (
+      pair_key TEXT PRIMARY KEY,
+      left_id TEXT NOT NULL,
+      right_id TEXT NOT NULL,
+      decision INTEGER NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0,
+      reason TEXT,
+      reviewed_at TEXT NOT NULL
+    )""")
     conn.executescript(SCHEMA)
     _ensure_column(conn, "memories", "affect_weight", "REAL DEFAULT 1.0")
     _ensure_column(conn, "memories", "consolidation_state", "TEXT DEFAULT 'none'")
@@ -507,6 +548,16 @@ def init_db(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "memories", "valid_to", "TEXT")
     _ensure_column(conn, "memories", "last_confirmed_at", "TEXT")
     _ensure_column(conn, "episodes", "source_kind", "TEXT")
+    _ensure_column(conn, "episodes", "status", "TEXT DEFAULT 'open'")
+    _ensure_column(conn, "episodes", "closed_at", "TEXT")
+    _ensure_column(conn, "episodes", "resolution_note", "TEXT")
+    _ensure_column(conn, "episodes", "closure_confidence", "REAL")
+    _ensure_column(conn, "episodes", "closure_source", "TEXT")
+    _ensure_column(conn, "episodes", "reviewed_at", "TEXT")
+    _ensure_column(conn, "episodes", "thread_id", "TEXT")
+    _ensure_column(conn, "episodes", "continues_episode_id", "TEXT")
+    _ensure_column(conn, "episodes", "last_seen_at", "TEXT")
+    _ensure_column(conn, "memories", "thread_id", "TEXT")
     conn.execute(
         "UPDATE episodes SET source_kind='dialog' WHERE source_kind IS NULL OR source_kind=''"
     )
@@ -534,6 +585,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "people", "profile_status", "TEXT DEFAULT 'none'")
     _ensure_column(conn, "people", "profile_version", "INTEGER DEFAULT 0")
     _ensure_column(conn, "people", "profile_basis_count", "INTEGER DEFAULT 0")
+    _ensure_column(conn, "people", "tags_json", "TEXT DEFAULT '[]'")
     # Existing drafts predate profile_basis_count; seed it from current evidence.
     conn.execute(
         """UPDATE people SET profile_basis_count=message_count
@@ -698,6 +750,7 @@ def upsert_memory(
         raise ValueError("empty memory text")
     mid = f"{source}:{source_record_id}"
     now = utcnow()
+    new_status = memory_status(text, identity_status)
     exists = conn.execute("SELECT id FROM memories WHERE id = ?", (mid,)).fetchone()
     fam = estimate_familiarity(conn, text)
     if exists:
@@ -710,12 +763,13 @@ def upsert_memory(
                identity_confidence=COALESCE(?, identity_confidence),
                identity_status=COALESCE(?, identity_status),
                group_id=COALESCE(?, group_id),
-               conversation_key=COALESCE(?, conversation_key)
+               conversation_key=COALESCE(?, conversation_key),
+               status=CASE WHEN status IN ('superseded','invalidated') THEN status ELSE ? END
                WHERE id=?""",
             (text[:4000], ts, scope, 1 if sensitive else 0, float(importance or 0),
              json.dumps(raw, ensure_ascii=False) if raw else None, text_hash(text), now,
              fam, speaker, speaker_id, person_id, identity_confidence, identity_status,
-             group_id, conversation_key, mid),
+             group_id, conversation_key, new_status, mid),
         )
         conn.commit()
         return mid, False
@@ -754,13 +808,13 @@ def upsert_memory(
            (id, source, source_record_id, source_hash, ts, text, scope, sensitive,
             importance, strength, confidence, self_relevance, unresolved,
             encoding_familiarity, current_familiarity, processing_fluency,
-            appraisal_status, speaker, speaker_id, person_id, identity_confidence,
+            appraisal_status, status, speaker, speaker_id, person_id, identity_confidence,
             identity_status, group_id, conversation_key, raw_json, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, 0.5, 0.5, 0.0, ?, ?, ?,
-                   'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (mid, source, source_record_id, text_hash(text), ts, text[:4000], scope,
          1 if sensitive else 0, float(importance or 0), fam, fam, fam,
-         speaker, speaker_id, person_id, float(identity_confidence or 0.0),
+         new_status, speaker, speaker_id, person_id, float(identity_confidence or 0.0),
          identity_status or "unknown", group_id, conversation_key,
          json.dumps(raw, ensure_ascii=False) if raw else None, now, now),
     )
@@ -866,7 +920,10 @@ def record_sleep(
     )
     conn.commit()
     return int(
-        conn.execute("SELECT COUNT(*) FROM sleep_runs WHERE day_key=?", (day_key,)).fetchone()[0]
+        conn.execute(
+            "SELECT COUNT(*) FROM sleep_runs WHERE day_key=? AND reason IN ('sleep','daily')",
+            (day_key,),
+        ).fetchone()[0]
     )
 
 
@@ -943,6 +1000,7 @@ def daily_context(
         """SELECT * FROM memories
            WHERE last_triggered_at IS NOT NULL
              AND substr(last_triggered_at, 1, 10) = ?
+             AND status='active'
            ORDER BY last_triggered_at DESC
            LIMIT ?""",
         (d, max(1, int(limit))),

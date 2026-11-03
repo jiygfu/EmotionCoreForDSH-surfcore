@@ -57,22 +57,30 @@ def search_memories(
     *,
     limit: int = 10,
     scope: str | None = None,
+    group_id: str | None = None,
     person_id: str | None = None,
     include_sensitive: bool = False,
+    include_reflections: bool = False,
 ) -> list[dict[str, Any]]:
     """FTS5-first memory search; degrade to local 2-gram ranking.
 
     Kept separate from ``retrieve``: familiarity/trigger tracking must not be
-    narrowed by a full-text prefilter.
+    narrowed by a full-text prefilter. ``reflection``/``legacy_prompt`` rows
+    stay in the raw store but are excluded from the default evidence surface.
     """
     query = (query or "").strip()
     if not query:
         return []
     where = [] if include_sensitive else ["m.sensitive=0"]
     params: list[Any] = []
+    if not include_reflections:
+        where.append("m.status='active'")
     if scope:
         where.append("m.scope=?")
         params.append(scope)
+    if group_id:
+        where.append("m.group_id=?")
+        params.append(group_id)
     if person_id:
         where.append("m.person_id=?")
         params.append(person_id)
@@ -106,7 +114,12 @@ def search_memories(
         scored.append((0.82 * sim + 0.18 * importance, row))
     scored.sort(key=lambda x: x[0], reverse=True)
     out = []
-    for score, row in scored[:max(1, int(limit))]:
+    seen: set[str] = set()
+    for score, row in scored:
+        norm = "".join(str(row["text"] or "").split()).lower()
+        if norm in seen:
+            continue
+        seen.add(norm)
         out.append({
             "id": row["id"],
             "score": round(score, 4),
@@ -115,9 +128,12 @@ def search_memories(
             "speaker": row["speaker"],
             "person_id": row["person_id"],
             "identity_status": row["identity_status"] or "unknown",
+            "status": row["status"] or "active",
             "ts": row["ts"],
             "text": row["text"],
         })
+        if len(out) >= max(1, int(limit)):
+            break
     return out
 
 

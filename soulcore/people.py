@@ -263,12 +263,44 @@ def context(conn: sqlite3.Connection, person_id: str, *, day: str | None = None)
         "trust": float(person["trust"] or 0.5),
         "valence": float(person["valence"] or 0.0),
         "unresolved": float(person["unresolved"] or 0.0),
+        "tags": json.loads(person["tags_json"] or "[]") if "tags_json" in person.keys() else [],
         "stance": person["stance"] or "casual",
         "action_hint": person["action_hint"] or STANCE_ACTIONS["casual"],
         "profile_status": person["profile_status"] or "none",
         "profile": profile_out,
         "today": dict(daily) if daily else None,
     }
+
+
+def tag_person(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    display_name: str = "",
+    tags: list[str] | None = None,
+    note: str = "",
+) -> dict[str, Any]:
+    """Add stable labels to a person's impression without touching P/values."""
+    pid = upsert_person(conn, user_id=str(user_id), display_name=str(display_name or user_id))
+    row = conn.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
+    if not row:
+        raise ValueError("person not found")
+    try:
+        old = json.loads(row["tags_json"] or "[]")
+    except Exception:
+        old = []
+    merged: list[str] = []
+    for item in list(old) + list(tags or []):
+        text = str(item or "").strip()[:40]
+        if text and text not in merged:
+            merged.append(text)
+    now = db.localnow()
+    conn.execute(
+        "UPDATE people SET tags_json=?, updated_at=? WHERE id=?",
+        (json.dumps(merged[-20:], ensure_ascii=False), now, pid),
+    )
+    conn.commit()
+    return context(conn, pid) or {"id": pid, "tags": merged}
 
 
 def profile_due(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict[str, Any]]:

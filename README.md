@@ -15,15 +15,23 @@ EmotionCore 是运行在 SurfCore 之上的情绪与记忆层：本地评价、P
 ## 目录
 
 ```text
-soulcore/                  Python 核心
-plugins/soul-bridge/       DSH host 工具（soulcore_memory）
-plugins/soulcore-settings/ DSH 设置页
-config/                    示例配置
-docs/                      设计与审计
-tests/                     单元测试
-scripts/                   探针/工具脚本
-experiments/               离线实验
+soulcore/                          Python 核心
+plugins/emotioncore-service/       本地 HTTP 服务
+plugins/emotioncore-runtime/       启动/守护 service + worker
+plugins/emotioncore-adapter/       QQ ec dispatcher / L5 注入
+plugins/reflex-arc/                L1、群聊触发、长期活动、鱼群记录
+plugins/memory-lab/                只读记忆实验 sidecar
+plugins/memory-lab-dsh/            记忆实验室设置页 / 意识海
+plugins/soulcore-settings/         EmotionCore 设置页
+plugins/soul-bridge/               旧 soulcore_memory 工具（可选）
+config/                            示例配置
+docs/                              设计与审计
+tests/                             单元测试
+scripts/                           探针/工具脚本
+experiments/                       离线实验
 ```
+
+插件总览与边界见 [docs/PLUGINS.md](docs/PLUGINS.md)。
 
 ## 第三方与参考
 
